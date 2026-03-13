@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, Component } from 'react'
 import Lobby from './components/Lobby.jsx'
 import Room from './components/Room.jsx'
 import * as svc from './lib/roomService.js'
@@ -21,14 +21,61 @@ function getStoredSession() {
   }
 }
 
-export default function App() {
+// ── Error Boundary ────────────────────────────────────────────────────────
+class ErrorBoundary extends Component {
+  constructor(props) {
+    super(props)
+    this.state = { hasError: false }
+  }
+  static getDerivedStateFromError() {
+    return { hasError: true }
+  }
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div style={{
+          height: '100vh', display: 'grid', placeItems: 'center',
+          background: '#0d0f14', color: '#e8edf8',
+          fontFamily: "'Syne', sans-serif",
+          textAlign: 'center', padding: '2rem',
+        }}>
+          <div>
+            <p style={{ fontSize: '2rem', marginBottom: '1rem' }}>⚠</p>
+            <h2 style={{ fontWeight: 800, marginBottom: '.5rem' }}>
+              Algo salió mal
+            </h2>
+            <p style={{ color: '#6b7a9e', marginBottom: '1.5rem', fontSize: '.9rem' }}>
+              Ocurrió un error inesperado. Por favor recargá la página.
+            </p>
+            <button
+              onClick={() => window.location.reload()}
+              style={{
+                padding: '.75rem 1.5rem',
+                background: '#7c3aed', border: 'none',
+                borderRadius: '10px', color: '#fff',
+                fontWeight: 700, cursor: 'pointer',
+                fontFamily: "'Syne', sans-serif",
+                fontSize: '.9rem',
+              }}
+            >
+              Recargar página
+            </button>
+          </div>
+        </div>
+      )
+    }
+    return this.props.children
+  }
+}
+
+// ── App Content ───────────────────────────────────────────────────────────
+function AppContent() {
   const [userKey]                 = useState(getUserKey)
   const [session, setSession]     = useState(null)
   const [loading, setLoading]     = useState(true)
   const [wasKicked, setWasKicked] = useState(false)
   const leavingVoluntarily        = useRef(false)
 
-  // FIX #4 — Asegurar setLoading(false) en todos los paths del restore
   useEffect(() => {
     const restore = async () => {
       const stored = getStoredSession()
@@ -39,29 +86,31 @@ export default function App() {
       try {
         const room = await svc.getRoom(stored.roomCode)
         if (!room) {
-          console.warn('Sala no encontrada, limpiando sesión')
           localStorage.removeItem('cla021_session')
-          setLoading(false) // FIX: setLoading aquí también
+          setLoading(false)
           return
         }
         await svc.joinRoom(room.id, userKey, stored.name, stored.avatar)
         setSession({ ...stored, roomId: room.id })
-      } catch (e) {
-        console.error('Error restaurando sesión:', e)
+      } catch {
         localStorage.removeItem('cla021_session')
-        // FIX: setLoading(false) en catch garantizado
       } finally {
-        setLoading(false) // FIX: siempre se ejecuta
+        setLoading(false)
       }
     }
     restore()
   }, [userKey])
 
+  // FIX #5 — join con try/catch, re-lanza para que Lobby lo capture
   const join = async ({ name, avatar, roomCode, roomId }) => {
-    await svc.joinRoom(roomId, userKey, name, avatar)
-    const s = { name, avatar, roomCode, roomId }
-    setSession(s)
-    localStorage.setItem('cla021_session', JSON.stringify(s))
+    try {
+      await svc.joinRoom(roomId, userKey, name, avatar)
+      const s = { name, avatar, roomCode, roomId }
+      setSession(s)
+      localStorage.setItem('cla021_session', JSON.stringify(s))
+    } catch {
+      throw new Error('No se pudo unir a la sala. Revisá tu conexión.')
+    }
   }
 
   const leave = async () => {
@@ -69,8 +118,8 @@ export default function App() {
     leavingVoluntarily.current = true
     try {
       await svc.leaveRoom(session.roomId, userKey)
-    } catch (e) {
-      console.error('leave error:', e)
+    } catch {
+      // silencioso en producción
     } finally {
       localStorage.removeItem('cla021_session')
       setSession(null)
@@ -125,21 +174,16 @@ export default function App() {
           background: 'rgba(248,113,113,.12)',
           border: '1px solid rgba(248,113,113,.3)',
           padding: '.75rem 1rem',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          gap: '.6rem',
+          display: 'flex', alignItems: 'center',
+          justifyContent: 'center', gap: '.6rem',
           fontFamily: "'Syne',sans-serif",
-          fontSize: '.85rem',
-          color: '#f87171',
-          fontWeight: 600,
-          backdropFilter: 'blur(12px)',
+          fontSize: '.85rem', color: '#f87171',
+          fontWeight: 600, backdropFilter: 'blur(12px)',
         }}>
           <span>⚠</span>
           El facilitador te removió de la sala
         </div>
       )}
-
       {session
         ? <Room
             roomId={session.roomId}
@@ -151,5 +195,13 @@ export default function App() {
         : <Lobby onJoin={join} userKey={userKey}/>
       }
     </>
+  )
+}
+
+export default function App() {
+  return (
+    <ErrorBoundary>
+      <AppContent />
+    </ErrorBoundary>
   )
 }

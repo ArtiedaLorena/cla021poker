@@ -13,6 +13,19 @@ export function useRoom(roomId, userKey, onKicked) {
   const kickChannelRef                  = useRef(null)
   const refreshingRef                   = useRef(false)
 
+  // FIX #10 — Evitar setState en componente desmontado
+  const isMountedRef = useRef(true)
+  useEffect(() => {
+    isMountedRef.current = true
+    return () => { isMountedRef.current = false }
+  }, [])
+
+  // FIX #2 — onKicked como ref para no re-crear subscripciones
+  const onKickedRef = useRef(onKicked)
+  useEffect(() => {
+    onKickedRef.current = onKicked
+  }, [onKicked])
+
   const refresh = useCallback(async () => {
     if (!roomId) return
     if (refreshingRef.current) return
@@ -32,15 +45,18 @@ export function useRoom(roomId, userKey, onKicked) {
         svc.getVotes(roomId),
         svc.getRounds(roomId),
       ])
+
+      // FIX #10 — Solo actualizar si el componente sigue montado
+      if (!isMountedRef.current) return
       setRoom(roomData)
       setParticipants(parts    ?? [])
       setVotes(voteData        ?? [])
       setRounds(roundData      ?? [])
     } catch (e) {
-      console.error('useRoom/refresh error:', e)
+      if (!isMountedRef.current) return
       setError(e)
     } finally {
-      setLoading(false)
+      if (isMountedRef.current) setLoading(false)
       refreshingRef.current = false
     }
   }, [roomId])
@@ -59,18 +75,13 @@ export function useRoom(roomId, userKey, onKicked) {
         { event: '*', schema: 'public', table: 'votes',        filter: `room_id=eq.${roomId}` }, () => refresh())
       .on('postgres_changes',
         { event: '*', schema: 'public', table: 'rounds',       filter: `room_id=eq.${roomId}` }, () => refresh())
-      .subscribe((status, err) => {
-        if (status === 'SUBSCRIBED') {
-          console.log(`✅ Realtime subscribed to room ${roomId}`)
-        }
+      .subscribe((status) => {
         if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          console.error('❌ Realtime error:', err)
           setTimeout(() => refresh(), 3000)
         }
       })
 
-    // FIX #7 — Detectar kick por campo kicked_at en lugar de solo is_online=false
-    // para no confundir salida voluntaria con kick
+    // FIX #2 — kickChannel usa onKickedRef, no onKicked directo
     const kickChannel = supabase
       .channel(`kick-${roomId}-${userKey}`)
       .on('postgres_changes',
@@ -84,10 +95,10 @@ export function useRoom(roomId, userKey, onKicked) {
           if (
             payload.new.user_key === userKey &&
             payload.new.is_online === false &&
-            payload.new.kicked_at !== null &&  // FIX: solo si fue kickeado
-            payload.new.kicked_at !== payload.old.kicked_at // FIX: es nuevo
+            payload.new.kicked_at !== null &&
+            payload.new.kicked_at !== payload.old.kicked_at
           ) {
-            onKicked?.()
+            onKickedRef.current?.()
           }
         }
       )
@@ -100,19 +111,21 @@ export function useRoom(roomId, userKey, onKicked) {
       supabase.removeChannel(channel)
       supabase.removeChannel(kickChannel)
     }
-  }, [roomId, userKey, refresh, onKicked])
+  // FIX #2 — onKicked removido de deps, se usa via ref
+  }, [roomId, userKey, refresh])
 
-  const isFacilitator   = Boolean(room?.facilitator_id && room.facilitator_id === userKey)
-  const votesMap        = useMemo(
+  const isFacilitator = Boolean(room?.facilitator_id && room.facilitator_id === userKey)
+
+  const votesMap = useMemo(
     () => Object.fromEntries(votes.map(v => [v.user_key, v.value])),
     [votes]
   )
+
   const participantsMap = useMemo(
     () => Object.fromEntries(participants.map(p => [p.user_key, p])),
     [participants]
   )
 
-  // FIX #15 — Filtrar solo votos de participantes activos para evitar votos huérfanos
   const activeUserKeys = useMemo(
     () => new Set(participants.map(p => p.user_key)),
     [participants]
@@ -138,8 +151,8 @@ export function useRoom(roomId, userKey, onKicked) {
     [numVals]
   )
 
-  // FIX #5 — timerTimeLeft como useMemo en lugar de IIFE en render
-  const timerTimeLeft = useMemo(() => {
+  // FIX #1 — función pura en lugar de useMemo para que Date.now() sea fresco
+  const getTimerTimeLeft = useCallback(() => {
     if (!room?.timer_running || !room?.timer_started_at) {
       return room?.timer_duration ?? 60
     }
@@ -149,7 +162,8 @@ export function useRoom(roomId, userKey, onKicked) {
     return Math.max(0, (room.timer_duration ?? 60) - elapsed)
   }, [room?.timer_running, room?.timer_started_at, room?.timer_duration])
 
-  // FIX #15 — votedCount solo cuenta votos de participantes activos
+  const timerTimeLeft = getTimerTimeLeft()
+
   const activeVotedCount = useMemo(() =>
     votes.filter(v => activeUserKeys.has(v.user_key)).length,
     [votes, activeUserKeys]
@@ -173,5 +187,6 @@ export function useRoom(roomId, userKey, onKicked) {
     timerTimeLeft,
     timerRunning:  room?.timer_running   ?? false,
     timerDuration: room?.timer_duration  ?? 60,
+    timerStartedAt: room?.timer_started_at ?? null,
   }
 }

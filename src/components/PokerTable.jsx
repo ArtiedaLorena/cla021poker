@@ -68,30 +68,28 @@ export default function PokerTable({
         </filter>
       </defs>
 
-      {/* Table shadow */}
+      {/* Table */}
       <ellipse cx={CX} cy={CY + 16} rx={340} ry={220} fill="rgba(0,0,0,0.55)" filter="url(#tableShadow)"/>
-      {/* Wood rim */}
       <ellipse cx={CX} cy={CY} rx={335} ry={215} fill="#3d2b0a"/>
       <ellipse cx={CX} cy={CY} rx={325} ry={205} fill="#5a3e10"/>
-      {/* Felt */}
       <ellipse cx={CX} cy={CY} rx={310} ry={190} fill="url(#feltG)"/>
       <ellipse cx={CX} cy={CY} rx={310} ry={190} fill="url(#feltGlow)"/>
-      {/* Felt inner line */}
       <ellipse cx={CX} cy={CY} rx={295} ry={175} fill="none" stroke="#ffffff08" strokeWidth="1.5"/>
 
       {/* Center content */}
       {avg && revealed ? (
         <g>
-        <rect x={CX-110} y={CY-62} width={220} height={118} rx="14"
-          fill="rgba(0,0,0,0.55)" stroke="#ffffff12" strokeWidth="1"/>
-        <text x={CX} y={CY+12} textAnchor="middle" fontSize="52" fontWeight="800"
-          fontFamily="'JetBrains Mono',monospace"
-          fill={allAgreed ? '#fbbf24' : '#6ee7b7'} filter="url(#glow)">{avg}</text>
-        <text x={CX} y={CY+44} textAnchor="middle" fontSize="12"
-          fontFamily="'Syne',sans-serif" letterSpacing="3"
-          fill={allAgreed ? '#fbbf2490' : '#6ee7b790'}>
-          {allAgreed ? 'CONSENSO ✓' : 'PROMEDIO'}
-        </text>
+          {/* FIX — rect más alto para contener el número */}
+          <rect x={CX-110} y={CY-62} width={220} height={118} rx="14"
+            fill="rgba(0,0,0,0.55)" stroke="#ffffff12" strokeWidth="1"/>
+          <text x={CX} y={CY+12} textAnchor="middle" fontSize="52" fontWeight="800"
+            fontFamily="'JetBrains Mono',monospace"
+            fill={allAgreed ? '#fbbf24' : '#6ee7b7'} filter="url(#glow)">{avg}</text>
+          <text x={CX} y={CY+44} textAnchor="middle" fontSize="12"
+            fontFamily="'Syne',sans-serif" letterSpacing="3"
+            fill={allAgreed ? '#fbbf2490' : '#6ee7b790'}>
+            {allAgreed ? 'CONSENSO ✓' : 'PROMEDIO'}
+          </text>
         </g>
       ) : currentStory ? (
         <g>
@@ -151,7 +149,29 @@ export default function PokerTable({
                   fill="rgba(0,0,0,0.35)"
                 />
               )}
-              <text x={pos.x} y={pos.y + 9} textAnchor="middle" fontSize="24">{p.avatar}</text>
+
+              {/* FIX #11 — foreignObject para emojis complejos (ZWJ sequences) */}
+              <foreignObject
+                x={pos.x - half} y={pos.y - half}
+                width={AV} height={AV}
+                style={{ overflow: 'visible', pointerEvents: 'none' }}
+              >
+                <div
+                  xmlns="http://www.w3.org/1999/xhtml"
+                  style={{
+                    width: AV, height: AV,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '24px',
+                    lineHeight: 1,
+                    userSelect: 'none',
+                  }}
+                >
+                  {p.avatar}
+                </div>
+              </foreignObject>
+
               {voted && !revealed && (
                 <text
                   x={pos.x + half - 10} y={pos.y - half + 16}
@@ -178,7 +198,6 @@ export default function PokerTable({
               <text x={pos.x} y={pos.y - half - 4} textAnchor="middle" fontSize="16">👑</text>
             )}
 
-            {/* Name label */}
             <text
               x={pos.x} y={pos.y + half + 18}
               textAnchor="middle"
@@ -189,9 +208,16 @@ export default function PokerTable({
               {isMe ? `${p.name.slice(0, 10)} (tú)` : p.name.slice(0, 12)}
             </text>
 
-            {/* Transfer button */}
+            {/* FIX #16 — onPointerUp con delta para evitar clicks accidentales en mobile */}
             {myKey === facilitatorKey && uid !== facilitatorKey && (
-              <g style={{ cursor: 'pointer' }} onClick={() => onTransfer(uid)}>
+              <g
+                style={{ cursor: 'pointer' }}
+                onPointerDown={e => { e.currentTarget._startY = e.clientY }}
+                onPointerUp={e => {
+                  const delta = Math.abs(e.clientY - e.currentTarget._startY)
+                  if (delta < 5) onTransfer(uid)
+                }}
+              >
                 <circle
                   cx={pos.x - half + 10} cy={pos.y - half + 10} r="12"
                   fill="rgba(0,0,0,0.7)" stroke="#fbbf24" strokeWidth="1.5"

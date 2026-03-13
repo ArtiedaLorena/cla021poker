@@ -1,23 +1,22 @@
 import { useState } from 'react'
 import * as svc from '../lib/roomService.js'
 
-
 const AVATARS = [
-  { id: 'fox',      icon: '🦊', label: 'Fox',     color: '#e8530a' },
-  { id: 'wolf',     icon: '🐺', label: 'Wolf',    color: '#6b7a9e' },
-  { id: 'bear',     icon: '🐻', label: 'Bear',    color: '#8B5E3C' },
-  { id: 'lion',     icon: '🦁', label: 'Lion',    color: '#d4a017' },
-  { id: 'tiger',    icon: '🐯', label: 'Tiger',   color: '#c0392b' },
-  { id: 'panda',    icon: '🐼', label: 'Panda',   color: '#4a4a4a' },
-  { id: 'penguin',  icon: '🐧', label: 'Penguin', color: '#0ea5e9' },
-  { id: 'owl',      icon: '🦉', label: 'Owl',     color: '#7c3aed' },
-  { id: 'dragon',   icon: '🐲', label: 'Dragon',  color: '#16a085' },
-  { id: 'robot',    icon: '🤖', label: 'Robot',   color: '#2980b9' },
-  { id: 'alien',    icon: '👾', label: 'Alien',   color: '#22c55e' },
-  { id: 'ninja',    icon: '🥷', label: 'Ninja',   color: '#1a1a2e' },
-  { id: 'wizard',   icon: '🧙', label: 'Wizard',  color: '#7c3aed' },
-  { id: 'knight',   icon: '🧝', label: 'Knight',  color: '#1e6b3a' }, // FIX: color único + se puede cambiar emoji a '⚔️'
-  { id: 'astronaut',icon: '🧑‍🚀', label: 'Astro', color: '#1e4d8c' },
+  { id: 'fox',       icon: '🦊', label: 'Fox',     color: '#e8530a' },
+  { id: 'wolf',      icon: '🐺', label: 'Wolf',    color: '#6b7a9e' },
+  { id: 'bear',      icon: '🐻', label: 'Bear',    color: '#8B5E3C' },
+  { id: 'lion',      icon: '🦁', label: 'Lion',    color: '#d4a017' },
+  { id: 'tiger',     icon: '🐯', label: 'Tiger',   color: '#c0392b' },
+  { id: 'panda',     icon: '🐼', label: 'Panda',   color: '#4a4a4a' },
+  { id: 'penguin',   icon: '🐧', label: 'Penguin', color: '#0ea5e9' },
+  { id: 'owl',       icon: '🦉', label: 'Owl',     color: '#7c3aed' },
+  { id: 'dragon',    icon: '🐲', label: 'Dragon',  color: '#16a085' },
+  { id: 'robot',     icon: '🤖', label: 'Robot',   color: '#2980b9' },
+  { id: 'alien',     icon: '👾', label: 'Alien',   color: '#22c55e' },
+  { id: 'ninja',     icon: '🥷', label: 'Ninja',   color: '#1a1a2e' },
+  { id: 'wizard',    icon: '🧙', label: 'Wizard',  color: '#7c3aed' },
+  { id: 'knight',    icon: '🧝', label: 'Knight',  color: '#1e6b3a' },
+  { id: 'astronaut', icon: '🧑‍🚀', label: 'Astro', color: '#1e4d8c' },
 ]
 
 export default function Lobby({ onJoin, userKey }) {
@@ -30,21 +29,39 @@ export default function Lobby({ onJoin, userKey }) {
   const [step, setStep]       = useState(1)
 
   const go = async () => {
-    if (!name.trim())                             { setErr('Ingresá tu nombre'); return }
-    if (tab === 'join' && code.trim().length < 4) { setErr('Código inválido'); return }
+    if (!name.trim()) { setErr('Ingresá tu nombre'); return }
+
+    // FIX #12 — Validación estricta de código: exactamente 5 chars alfanuméricos
+    if (tab === 'join') {
+      const trimmed = code.trim()
+      if (trimmed.length !== 5 || !/^[A-Z0-9]{5}$/.test(trimmed)) {
+        setErr('El código debe tener 5 caracteres alfanuméricos')
+        return
+      }
+    }
+
     setErr(''); setLoading(true)
     try {
       if (tab === 'create') {
         const room = await svc.createRoom(userKey)
-        onJoin({ name: name.trim(), avatar: avatar.icon, roomCode: room.code, roomId: room.id })
+        await onJoin({
+          name: name.trim(),
+          avatar: avatar.icon,
+          roomCode: room.code,
+          roomId: room.id,
+        })
       } else {
         const room = await svc.getRoom(code.trim())
         if (!room) { setErr('Sala no encontrada'); setLoading(false); return }
-        onJoin({ name: name.trim(), avatar: avatar.icon, roomCode: room.code, roomId: room.id })
+        await onJoin({
+          name: name.trim(),
+          avatar: avatar.icon,
+          roomCode: room.code,
+          roomId: room.id,
+        })
       }
     } catch (e) {
-      setErr('Error al conectar. Revisá tu conexión.')
-      console.error(e)
+      setErr(e?.message || 'Error al conectar. Revisá tu conexión.')
     } finally {
       setLoading(false)
     }
@@ -161,7 +178,6 @@ export default function Lobby({ onJoin, userKey }) {
               <span className="lb-back-av-change">cambiar ↩</span>
             </button>
 
-            {/* FIX #16 — Título diferenciado según tab */}
             <p className="lb-step-title">
               {tab === 'create' ? '¿Cómo querés que te llamen?' : '¿Cuál es tu nombre?'}
             </p>
@@ -194,7 +210,7 @@ export default function Lobby({ onJoin, userKey }) {
                     value={code}
                     onChange={e => setCode(e.target.value.toUpperCase())}
                     placeholder="ej: AB3XY"
-                    maxLength={6}
+                    maxLength={5}
                     onKeyDown={e => e.key === 'Enter' && go()}
                   />
                 </div>
@@ -231,7 +247,6 @@ export default function Lobby({ onJoin, userKey }) {
         )}
       </div>
 
-      {/* FIX #17 — Footer fuera del lb-card pero sin div wrapper innecesario */}
       <footer className="lb-footer">
         <p className="lb-footer-copy">
           © {new Date().getFullYear()} CLA021POKER

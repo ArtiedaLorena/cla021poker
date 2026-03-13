@@ -110,6 +110,11 @@ function ConfirmModal({ title, body, onConfirm, onCancel }) {
 
 // ── History Panel ─────────────────────────────────────────────────────────
 function HistoryPanel({ rounds, onBack }) {
+  // FIX #13 — Ordenar explícitamente por fecha descendente
+  const sorted = [...rounds].sort(
+    (a, b) => new Date(b.created_at) - new Date(a.created_at)
+  )
+
   return (
     <div className="room">
       <header className="rh">
@@ -126,13 +131,13 @@ function HistoryPanel({ rounds, onBack }) {
         </div>
       </header>
       <div className="panel">
-        {!rounds.length
+        {!sorted.length
           ? <div className="empty-state">
               <span>📋</span>
               <p>Sin rondas completadas aún</p>
             </div>
           : <div className="hist-list">
-              {rounds.map(h => (
+              {sorted.map(h => (
                 <div key={h.id} className="hist-item">
                   <div className="hist-top">
                     <span className="hist-story">{h.story}</span>
@@ -158,7 +163,9 @@ function HistoryPanel({ rounds, onBack }) {
 }
 
 // ── Timer local sincronizado ───────────────────────────────────────────────
-function useLocalTimer(timerTimeLeft, timerRunning) {
+// FIX #3 — Recibe timerStartedAt y timerDuration para re-sincronizar
+// cuando el tab vuelve del background
+function useLocalTimer(timerTimeLeft, timerRunning, timerStartedAt, timerDuration) {
   const [displayTime, setDisplayTime] = useState(timerTimeLeft)
 
   useEffect(() => {
@@ -166,12 +173,31 @@ function useLocalTimer(timerTimeLeft, timerRunning) {
   }, [timerTimeLeft])
 
   useEffect(() => {
-    if (!timerRunning) return
+    if (!timerRunning) {
+      setDisplayTime(timerTimeLeft)
+      return
+    }
+
     const interval = setInterval(() => {
       setDisplayTime(t => Math.max(0, t - 1))
     }, 1000)
-    return () => clearInterval(interval)
-  }, [timerRunning])
+
+    // FIX #3 — Re-sincronizar cuando el tab vuelve a estar visible
+    const handleVisibility = () => {
+      if (document.visibilityState === 'visible' && timerStartedAt) {
+        const elapsed = Math.floor(
+          (Date.now() - new Date(timerStartedAt).getTime()) / 1000
+        )
+        setDisplayTime(Math.max(0, (timerDuration ?? 60) - elapsed))
+      }
+    }
+    document.addEventListener('visibilitychange', handleVisibility)
+
+    return () => {
+      clearInterval(interval)
+      document.removeEventListener('visibilitychange', handleVisibility)
+    }
+  }, [timerRunning, timerTimeLeft, timerStartedAt, timerDuration])
 
   return displayTime
 }
@@ -182,30 +208,35 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
     room, participants, votesMap, rounds,
     loading, isFacilitator, avg, allAgreed,
     votedCount, totalCount,
-    timerTimeLeft, timerRunning, timerDuration,
+    timerTimeLeft, timerRunning, timerDuration, timerStartedAt,
   } = useRoom(roomId, userKey, onKicked)
 
   const { toasts, addToast } = useToast()
 
   const [story, setStory]                 = useState('')
   const [myVote, setMyVote]               = useState(null)
-  const [timerDur, setTimerDur]           = useState(60)
+  // FIX #14 — Inicializar con función lazy para evitar flash visual
+  const [timerDur, setTimerDur]           = useState(() => timerDuration || 60)
   const [showHistory, setShowHistory]     = useState(false)
   const [copied, setCopied]               = useState(false)
   const [modal, setModal]                 = useState(null)
   const [allVotedPulse, setAllVotedPulse] = useState(false)
   const prevVotedCount                    = useRef(0)
   const prevRevealed                      = useRef(false)
-  // FIX #2 — Guard para evitar múltiples llamadas a revealVotes
   const autoRevealedRef                   = useRef(false)
 
-  const displayTime = useLocalTimer(timerTimeLeft, timerRunning)
+  // FIX #3 — Pasar timerStartedAt y timerDuration al hook
+  const displayTime = useLocalTimer(
+    timerTimeLeft,
+    timerRunning,
+    timerStartedAt,
+    timerDuration
+  )
 
   // Resetear voto al nueva ronda
   useEffect(() => {
     if (room && !room.revealed) {
       setMyVote(null)
-      // FIX #2 — Resetear guard al iniciar nueva ronda
       autoRevealedRef.current = false
     }
   }, [room?.current_story])
@@ -215,22 +246,25 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
     if (timerDuration) setTimerDur(timerDuration)
   }, [timerDuration])
 
-  // FIX #11 — Toasts automáticos: usar ref para saber si es el mount inicial
-  const isMountedRef = useRef(false)
+  // FIX #8 — Limpiar story cuando se pierde el rol de facilitador
+  useEffect(() => {
+    if (!isFacilitator) setStory('')
+  }, [isFacilitator])
+
+  // FIX #7 — Effect solo para mount inicial: setear valores base sin toasts
   useEffect(() => {
     if (!room) return
-
-    // Ignorar el primer render (mount) para no mostrar toasts falsos
-    if (!isMountedRef.current) {
-      isMountedRef.current = true
-      prevVotedCount.current = votedCount
-      // Setear pulse correctamente si al entrar ya todos votaron
-      if (votedCount > 0 && votedCount === totalCount && !room.revealed) {
-        setAllVotedPulse(true)
-      }
-      return
+    prevVotedCount.current = votedCount
+    prevRevealed.current   = room.revealed ?? false
+    if (votedCount > 0 && votedCount === totalCount && !room.revealed) {
+      setAllVotedPulse(true)
     }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []) // Solo al montar
 
+  // FIX #7 — Effect separado para cambios posteriores al mount
+  useEffect(() => {
+    if (!room) return
     if (votedCount > prevVotedCount.current) {
       const diff = votedCount - prevVotedCount.current
       addToast(`${diff} participante${diff > 1 ? 's' : ''} votó`, 'info', 2000)
@@ -240,10 +274,10 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
     if (votedCount > 0 && votedCount === totalCount && !room.revealed) {
       setAllVotedPulse(true)
       addToast('¡Todos votaron! Podés revelar 🎉', 'success', 4000)
-    } else {
+    } else if (!room.revealed) {
       setAllVotedPulse(false)
     }
-  }, [votedCount, totalCount, addToast])  // FIX #12 — addToast incluido en deps
+  }, [votedCount, totalCount, addToast])
 
   useEffect(() => {
     if (!room) return
@@ -255,9 +289,9 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
       }
     }
     prevRevealed.current = room.revealed ?? false
-  }, [room?.revealed, allAgreed, addToast])  // FIX #12 — addToast incluido en deps
+  }, [room?.revealed, allAgreed, addToast])
 
-  // FIX #2 — Auto-reveal con guard para evitar llamadas múltiples
+  // Auto-reveal con guard
   useEffect(() => {
     if (
       displayTime <= 0 &&
@@ -274,9 +308,6 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
 
   // ── Acciones ──────────────────────────────────────────────────────────
 
-  // FIX #10 — vote() solo registra el voto, el botón "Confirmar" ya no
-  // llama vote() de nuevo. La carta seleccionada vota inmediatamente
-  // y el botón confirmar es solo visual feedback
   const vote = useCallback(async (v) => {
     if (room?.revealed || !room?.current_story) return
     setMyVote(v)
@@ -376,7 +407,6 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
     }
   }
 
-  // FIX #20 — handleTimerDurChange con try/catch
   const handleTimerDurChange = async (s) => {
     setTimerDur(s)
     if (!timerRunning) {
@@ -388,12 +418,28 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
     }
   }
 
-  const copyCode = () => {
-    navigator.clipboard.writeText(roomCode).then(() => {
+  // FIX #9 — copyCode con fallback para contextos sin clipboard API
+  const copyCode = async () => {
+    try {
+      if (navigator.clipboard && window.isSecureContext) {
+        await navigator.clipboard.writeText(roomCode)
+      } else {
+        const el = document.createElement('textarea')
+        el.value = roomCode
+        el.style.position = 'fixed'
+        el.style.opacity = '0'
+        document.body.appendChild(el)
+        el.focus()
+        el.select()
+        document.execCommand('copy')
+        document.body.removeChild(el)
+      }
       setCopied(true)
       addToast('Código copiado 📋', 'success', 1500)
       setTimeout(() => setCopied(false), 2000)
-    })
+    } catch {
+      addToast('No se pudo copiar el código', 'error')
+    }
   }
 
   const handleLeave = () => {
@@ -578,18 +624,14 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
                 </button>
               ))}
             </div>
-            {/* FIX #10 — Botón confirmar es solo indicador visual, no vuelve a llamar vote() */}
             {roundActive && !isRevealed && (
-              <div
-                className={`lp-confirm-btn ${myVote ? 'ready' : 'waiting'}`}
-              >
+              <div className={`lp-confirm-btn ${myVote ? 'ready' : 'waiting'}`}>
                 {myVote ? '✓ Voto registrado' : 'Elige una carta…'}
               </div>
             )}
           </div>
 
           {/* Jugadores */}
-          {/* FIX #22 — Clase lp-players-section eliminada (no existe en CSS) */}
           <div className="lp-section">
             <div className="lp-label-row">
               <span className="lp-label">Jugadores ({totalCount})</span>
@@ -775,16 +817,20 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
           )}
 
           {/* Historial rápido */}
+          {/* FIX #13 — Ordenar explícitamente */}
           <div className="rp-section rp-hist-section">
             <div className="rp-label">Historial de votación</div>
             {rounds.length === 0
               ? <div className="rp-empty">Sin historias completadas</div>
-              : rounds.slice(0, 4).map(h => (
-                  <div key={h.id} className="rp-hist-row">
-                    <span className="rp-hist-story">{h.story}</span>
-                    <span className="rp-hist-avg">{h.average}</span>
-                  </div>
-                ))
+              : [...rounds]
+                  .sort((a, b) => new Date(b.created_at) - new Date(a.created_at))
+                  .slice(0, 4)
+                  .map(h => (
+                    <div key={h.id} className="rp-hist-row">
+                      <span className="rp-hist-story">{h.story}</span>
+                      <span className="rp-hist-avg">{h.average}</span>
+                    </div>
+                  ))
             }
             {rounds.length > 0 && (
               <button className="rp-hist-link" onClick={() => setShowHistory(true)}>
