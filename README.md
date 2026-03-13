@@ -54,7 +54,7 @@ Backend / Infra
 └── Supabase Auth     — (sin auth, userKey por tab)
 
 Deploy
-└── Vercel            — Hosting
+└── Netlify           
 ```
 
 ---
