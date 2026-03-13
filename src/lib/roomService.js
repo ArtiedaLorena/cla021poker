@@ -24,12 +24,14 @@ export async function createRoom(userKey) {
   return data
 }
 
+// FIX #3 — Propagar error de red en lugar de tragarlo silenciosamente
 export async function getRoom(code) {
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from('rooms')
     .select('*')
     .eq('code', code.toUpperCase())
-    .single()
+    .maybeSingle() // maybeSingle no lanza error si no encuentra, single sí
+  if (error) throw error
   return data || null
 }
 
@@ -60,19 +62,25 @@ export async function markOffline(roomId, userKey) {
 }
 
 export async function leaveRoom(roomId, userKey) {
+  // FIX #14 — Marcar offline primero pero NO borrar voto hasta después
+  // del chequeo de facilitador, para no perder datos de rondas en curso
   await markOffline(roomId, userKey)
-
-  await supabase
-    .from('votes')
-    .delete()
-    .eq('room_id', roomId)
-    .eq('user_key', userKey)
 
   const { data: room } = await supabase
     .from('rooms')
-    .select('facilitator_id')
+    .select('facilitator_id, revealed')
     .eq('id', roomId)
     .single()
+
+  // Solo borrar voto si la ronda ya fue revelada o no hay historia activa
+  // Si hay votación en curso, preservar el voto para el historial
+  if (room?.revealed !== false) {
+    await supabase
+      .from('votes')
+      .delete()
+      .eq('room_id', roomId)
+      .eq('user_key', userKey)
+  }
 
   if (room?.facilitator_id === userKey) {
     const { data: next } = await supabase
@@ -93,17 +101,18 @@ export async function leaveRoom(roomId, userKey) {
 }
 
 export async function kickParticipant(roomId, userKey) {
-  // Borrar su voto
   await supabase
     .from('votes')
     .delete()
     .eq('room_id', roomId)
     .eq('user_key', userKey)
 
-  // Marcarlo offline
+  // FIX #7 — Usar campo dedicado 'kicked_at' o un campo is_kicked separado
+  // para distinguir kick de salida voluntaria.
+  // Por ahora usamos is_online=false + kicked_at timestamp como señal
   const { error } = await supabase
     .from('participants')
-    .update({ is_online: false })
+    .update({ is_online: false, kicked_at: new Date().toISOString() })
     .eq('room_id', roomId)
     .eq('user_key', userKey)
 
@@ -165,12 +174,16 @@ export async function setStory(roomId, story) {
   if (error) throw error
 }
 
+// FIX #6 — Guard de idempotencia: verificar si ya está revelado antes de insertar ronda
 export async function revealVotes(roomId) {
   const [{ data: room }, votes, participants] = await Promise.all([
     supabase.from('rooms').select('*').eq('id', roomId).single(),
     getVotes(roomId),
     getParticipants(roomId),
   ])
+
+  // Guard: si ya está revelado, no insertar ronda duplicada
+  if (room?.revealed) return
 
   const numVals = votes
     .filter(v => v.value !== '?' && v.value !== '☕')
@@ -180,7 +193,7 @@ export async function revealVotes(roomId) {
     ? (numVals.reduce((a, b) => a + b, 0) / numVals.length).toFixed(1)
     : '?'
 
-  const votesSnapshot = Object.fromEntries(votes.map(v => [v.user_key, v.value]))
+  const votesSnapshot        = Object.fromEntries(votes.map(v => [v.user_key, v.value]))
   const participantsSnapshot = Object.fromEntries(
     participants.map(p => [p.user_key, { name: p.name, avatar: p.avatar }])
   )

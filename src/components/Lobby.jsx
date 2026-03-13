@@ -1,22 +1,23 @@
 import { useState } from 'react'
 import * as svc from '../lib/roomService.js'
 
+
 const AVATARS = [
-  { id: 'fox',     icon: '🦊', label: 'Fox',     color: '#e8530a' },
-  { id: 'wolf',    icon: '🐺', label: 'Wolf',    color: '#6b7a9e' },
-  { id: 'bear',    icon: '🐻', label: 'Bear',    color: '#8B5E3C' },
-  { id: 'lion',    icon: '🦁', label: 'Lion',    color: '#d4a017' },
-  { id: 'tiger',   icon: '🐯', label: 'Tiger',   color: '#e8530a' },
-  { id: 'panda',   icon: '🐼', label: 'Panda',   color: '#4a4a4a' },
-  { id: 'penguin', icon: '🐧', label: 'Penguin', color: '#2980b9' },
-  { id: 'owl',     icon: '🦉', label: 'Owl',     color: '#7c3aed' },
-  { id: 'dragon',  icon: '🐲', label: 'Dragon',  color: '#16a085' },
-  { id: 'robot',   icon: '🤖', label: 'Robot',   color: '#2980b9' },
-  { id: 'alien',   icon: '👾', label: 'Alien',   color: '#22c55e' },
-  { id: 'ninja',   icon: '🥷', label: 'Ninja',   color: '#1a1a2e' },
-  { id: 'wizard',  icon: '🧙', label: 'Wizard',  color: '#7c3aed' },
-  { id: 'knight',  icon: '🧝', label: 'Knight',  color: '#2980b9' },
-  { id: 'astronaut',icon:'🧑‍🚀',label:'Astro',  color: '#1e4d8c' },
+  { id: 'fox',      icon: '🦊', label: 'Fox',     color: '#e8530a' },
+  { id: 'wolf',     icon: '🐺', label: 'Wolf',    color: '#6b7a9e' },
+  { id: 'bear',     icon: '🐻', label: 'Bear',    color: '#8B5E3C' },
+  { id: 'lion',     icon: '🦁', label: 'Lion',    color: '#d4a017' },
+  { id: 'tiger',    icon: '🐯', label: 'Tiger',   color: '#c0392b' },
+  { id: 'panda',    icon: '🐼', label: 'Panda',   color: '#4a4a4a' },
+  { id: 'penguin',  icon: '🐧', label: 'Penguin', color: '#0ea5e9' },
+  { id: 'owl',      icon: '🦉', label: 'Owl',     color: '#7c3aed' },
+  { id: 'dragon',   icon: '🐲', label: 'Dragon',  color: '#16a085' },
+  { id: 'robot',    icon: '🤖', label: 'Robot',   color: '#2980b9' },
+  { id: 'alien',    icon: '👾', label: 'Alien',   color: '#22c55e' },
+  { id: 'ninja',    icon: '🥷', label: 'Ninja',   color: '#1a1a2e' },
+  { id: 'wizard',   icon: '🧙', label: 'Wizard',  color: '#7c3aed' },
+  { id: 'knight',   icon: '🧝', label: 'Knight',  color: '#1e6b3a' }, // FIX: color único + se puede cambiar emoji a '⚔️'
+  { id: 'astronaut',icon: '🧑‍🚀', label: 'Astro', color: '#1e4d8c' },
 ]
 
 export default function Lobby({ onJoin, userKey }) {
@@ -26,7 +27,7 @@ export default function Lobby({ onJoin, userKey }) {
   const [err, setErr]         = useState('')
   const [loading, setLoading] = useState(false)
   const [avatar, setAvatar]   = useState(AVATARS[0])
-  const [step, setStep]       = useState(1) // 1: elegir avatar, 2: nombre + acción
+  const [step, setStep]       = useState(1)
 
   const go = async () => {
     if (!name.trim())                             { setErr('Ingresá tu nombre'); return }
@@ -51,8 +52,6 @@ export default function Lobby({ onJoin, userKey }) {
 
   return (
     <div className="lobby">
-
-      {/* Fondo animado */}
       <div className="lobby-bg">
         <div className="lobby-orb orb-1"/>
         <div className="lobby-orb orb-2"/>
@@ -60,16 +59,14 @@ export default function Lobby({ onJoin, userKey }) {
       </div>
 
       <div className="lb-card">
-
         {/* ── LOGO ── */}
-         <div className="lb-logo">
+        <div className="lb-logo">
           <div className="lb-logo-img">
             <img
               src="/logo.png"
               alt="CLA021POKER"
               style={{
-                width: '65px',
-                height: '65px',
+                width: '65px', height: '65px',
                 borderRadius: '15px',
                 objectFit: 'contain',
                 imageRendering: 'crisp-edges',
@@ -133,9 +130,14 @@ export default function Lobby({ onJoin, userKey }) {
               ))}
             </div>
 
-            {/* Preview del avatar seleccionado */}
             <div className="av-preview">
-              <div className="av-preview-bubble" style={{ background: avatar.color + '22', borderColor: avatar.color + '55' }}>
+              <div
+                className="av-preview-bubble"
+                style={{
+                  background: avatar.color + '22',
+                  borderColor: avatar.color + '55',
+                }}
+              >
                 <span className="av-preview-icon">{avatar.icon}</span>
               </div>
               <div className="av-preview-info">
@@ -153,16 +155,15 @@ export default function Lobby({ onJoin, userKey }) {
         {/* ── PASO 2: Nombre + Acción ── */}
         {step === 2 && (
           <div className="lb-step-content">
-
-            {/* Avatar seleccionado — resumen */}
             <button className="lb-back-avatar" onClick={() => setStep(1)}>
               <span className="lb-back-av-icon">{avatar.icon}</span>
               <span className="lb-back-av-name">{avatar.label}</span>
               <span className="lb-back-av-change">cambiar ↩</span>
             </button>
 
+            {/* FIX #16 — Título diferenciado según tab */}
             <p className="lb-step-title">
-              {tab === 'create' ? '¿Cómo te llaman?' : '¿Cómo te llaman?'}
+              {tab === 'create' ? '¿Cómo querés que te llamen?' : '¿Cuál es tu nombre?'}
             </p>
 
             <div className="lb-input-wrap">
@@ -181,7 +182,6 @@ export default function Lobby({ onJoin, userKey }) {
               )}
             </div>
 
-            {/* Código de sala — solo en join */}
             {tab === 'join' && (
               <>
                 <p className="lb-step-title" style={{ marginTop: '1rem' }}>
@@ -223,32 +223,28 @@ export default function Lobby({ onJoin, userKey }) {
               }
             </button>
 
-            {/* Info de privacidad */}
             <p className="lb-hint">
-              🔒 Tu sesión se guarda automáticamente, <br/>si recargás la página volvés a tu sala
+              🔒 Tu sesión se guarda automáticamente, <br/>
+              si recargás la página volvés a tu sala
             </p>
           </div>
-          
         )}
       </div>
-      <div>
-     <footer className="lb-footer">
-      <p className="lb-footer-copy">
-        © {new Date().getFullYear()} CLA021POKER
-      </p>
-      <a
-        href="https://cafecito.app/artiedalorena"
-        
-        target="_blank"
-        rel="noopener noreferrer"
-        className="lb-donate-btn"
-      >
-        ☕ Invitame un café
-      </a>
-    </footer>
 
-  </div>  
+      {/* FIX #17 — Footer fuera del lb-card pero sin div wrapper innecesario */}
+      <footer className="lb-footer">
+        <p className="lb-footer-copy">
+          © {new Date().getFullYear()} CLA021POKER
+        </p>
+        <a
+          href="https://cafecito.app/artiedalorena"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="lb-donate-btn"
+        >
+          ☕ Invitame un café
+        </a>
+      </footer>
     </div>
-    
   )
 }

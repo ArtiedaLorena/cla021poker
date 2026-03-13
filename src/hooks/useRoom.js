@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
 import { supabase } from '../lib/supabase.js'
 import * as svc from '../lib/roomService.js'
 
@@ -49,36 +49,28 @@ export function useRoom(roomId, userKey, onKicked) {
     if (!roomId) return
     refresh()
 
-    // Canal principal — cambios en sala, participantes, votos y rondas
     const channel = supabase
       .channel(`room-${roomId}`)
       .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'rooms', filter: `id=eq.${roomId}` },
-        () => refresh()
-      )
+        { event: '*', schema: 'public', table: 'rooms',        filter: `id=eq.${roomId}`      }, () => refresh())
       .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'participants', filter: `room_id=eq.${roomId}` },
-        () => refresh()
-      )
+        { event: '*', schema: 'public', table: 'participants', filter: `room_id=eq.${roomId}` }, () => refresh())
       .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'votes', filter: `room_id=eq.${roomId}` },
-        () => refresh()
-      )
+        { event: '*', schema: 'public', table: 'votes',        filter: `room_id=eq.${roomId}` }, () => refresh())
       .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'rounds', filter: `room_id=eq.${roomId}` },
-        () => refresh()
-      )
+        { event: '*', schema: 'public', table: 'rounds',       filter: `room_id=eq.${roomId}` }, () => refresh())
       .subscribe((status, err) => {
         if (status === 'SUBSCRIBED') {
           console.log(`✅ Realtime subscribed to room ${roomId}`)
         }
         if (status === 'CHANNEL_ERROR' || status === 'TIMED_OUT') {
-          console.error(`❌ Realtime error:`, err)
+          console.error('❌ Realtime error:', err)
           setTimeout(() => refresh(), 3000)
         }
       })
 
-    // Canal de kick — detecta si este usuario fue removido
+    // FIX #7 — Detectar kick por campo kicked_at en lugar de solo is_online=false
+    // para no confundir salida voluntaria con kick
     const kickChannel = supabase
       .channel(`kick-${roomId}-${userKey}`)
       .on('postgres_changes',
@@ -91,7 +83,9 @@ export function useRoom(roomId, userKey, onKicked) {
         (payload) => {
           if (
             payload.new.user_key === userKey &&
-            payload.new.is_online === false
+            payload.new.is_online === false &&
+            payload.new.kicked_at !== null &&  // FIX: solo si fue kickeado
+            payload.new.kicked_at !== payload.old.kicked_at // FIX: es nuevo
           ) {
             onKicked?.()
           }
@@ -109,19 +103,43 @@ export function useRoom(roomId, userKey, onKicked) {
   }, [roomId, userKey, refresh, onKicked])
 
   const isFacilitator   = Boolean(room?.facilitator_id && room.facilitator_id === userKey)
-  const votesMap        = Object.fromEntries(votes.map(v => [v.user_key, v.value]))
-  const participantsMap = Object.fromEntries(participants.map(p => [p.user_key, p]))
+  const votesMap        = useMemo(
+    () => Object.fromEntries(votes.map(v => [v.user_key, v.value])),
+    [votes]
+  )
+  const participantsMap = useMemo(
+    () => Object.fromEntries(participants.map(p => [p.user_key, p])),
+    [participants]
+  )
 
-  const numVals = votes
-    .filter(v => v.value !== '?' && v.value !== '☕')
-    .map(v => v.value === '½' ? 0.5 : Number(v.value))
+  // FIX #15 — Filtrar solo votos de participantes activos para evitar votos huérfanos
+  const activeUserKeys = useMemo(
+    () => new Set(participants.map(p => p.user_key)),
+    [participants]
+  )
 
-  const avg       = numVals.length
-    ? (numVals.reduce((a, b) => a + b, 0) / numVals.length).toFixed(1)
-    : null
-  const allAgreed = new Set(numVals).size === 1 && numVals.length > 1
+  const numVals = useMemo(() =>
+    votes
+      .filter(v => activeUserKeys.has(v.user_key))
+      .filter(v => v.value !== '?' && v.value !== '☕')
+      .map(v => v.value === '½' ? 0.5 : Number(v.value)),
+    [votes, activeUserKeys]
+  )
 
-  const timerTimeLeft = (() => {
+  const avg = useMemo(() =>
+    numVals.length
+      ? (numVals.reduce((a, b) => a + b, 0) / numVals.length).toFixed(1)
+      : null,
+    [numVals]
+  )
+
+  const allAgreed = useMemo(() =>
+    new Set(numVals).size === 1 && numVals.length > 1,
+    [numVals]
+  )
+
+  // FIX #5 — timerTimeLeft como useMemo en lugar de IIFE en render
+  const timerTimeLeft = useMemo(() => {
     if (!room?.timer_running || !room?.timer_started_at) {
       return room?.timer_duration ?? 60
     }
@@ -129,7 +147,13 @@ export function useRoom(roomId, userKey, onKicked) {
       (Date.now() - new Date(room.timer_started_at).getTime()) / 1000
     )
     return Math.max(0, (room.timer_duration ?? 60) - elapsed)
-  })()
+  }, [room?.timer_running, room?.timer_started_at, room?.timer_duration])
+
+  // FIX #15 — votedCount solo cuenta votos de participantes activos
+  const activeVotedCount = useMemo(() =>
+    votes.filter(v => activeUserKeys.has(v.user_key)).length,
+    [votes, activeUserKeys]
+  )
 
   return {
     room,
@@ -144,48 +168,10 @@ export function useRoom(roomId, userKey, onKicked) {
     avg,
     allAgreed,
     refresh,
-    votedCount:    votes.length,
+    votedCount:    activeVotedCount,
     totalCount:    participants.length,
     timerTimeLeft,
     timerRunning:  room?.timer_running   ?? false,
     timerDuration: room?.timer_duration  ?? 60,
   }
-}
-
-export function useTimer(onEnd) {
-  const [remaining, setRemaining] = useState(60)
-  const [running, setRunning]     = useState(false)
-  const [total, setTotal]         = useState(60)
-  const ref                       = useRef(null)
-
-  const start = useCallback((d = 60) => {
-    setTotal(d); setRemaining(d); setRunning(true)
-  }, [])
-
-  const stop = useCallback(() => {
-    setRunning(false)
-    clearInterval(ref.current)
-  }, [])
-
-  const reset = useCallback((d = 60) => {
-    stop(); setTotal(d); setRemaining(d)
-  }, [stop])
-
-  useEffect(() => {
-    if (!running) return
-    ref.current = setInterval(() => {
-      setRemaining(r => {
-        if (r <= 1) {
-          clearInterval(ref.current)
-          setRunning(false)
-          onEnd?.()
-          return 0
-        }
-        return r - 1
-      })
-    }, 1000)
-    return () => clearInterval(ref.current)
-  }, [running, onEnd])
-
-  return { remaining, running, total, start, stop, reset }
 }

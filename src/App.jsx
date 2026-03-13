@@ -3,7 +3,6 @@ import Lobby from './components/Lobby.jsx'
 import Room from './components/Room.jsx'
 import * as svc from './lib/roomService.js'
 
-
 const generateId = () => crypto.randomUUID()
 
 function getUserKey() {
@@ -23,24 +22,26 @@ function getStoredSession() {
 }
 
 export default function App() {
-  const [userKey]               = useState(getUserKey)
-  const [session, setSession]   = useState(null)
-  const [loading, setLoading]   = useState(true)
+  const [userKey]                 = useState(getUserKey)
+  const [session, setSession]     = useState(null)
+  const [loading, setLoading]     = useState(true)
   const [wasKicked, setWasKicked] = useState(false)
-  const leavingVoluntarily      = useRef(false)
+  const leavingVoluntarily        = useRef(false)
 
-  // Restaurar sesión al recargar
+  // FIX #4 — Asegurar setLoading(false) en todos los paths del restore
   useEffect(() => {
     const restore = async () => {
       const stored = getStoredSession()
-      if (!stored) { setLoading(false); return }
-
+      if (!stored) {
+        setLoading(false)
+        return
+      }
       try {
         const room = await svc.getRoom(stored.roomCode)
         if (!room) {
           console.warn('Sala no encontrada, limpiando sesión')
           localStorage.removeItem('cla021_session')
-          setLoading(false)
+          setLoading(false) // FIX: setLoading aquí también
           return
         }
         await svc.joinRoom(room.id, userKey, stored.name, stored.avatar)
@@ -48,8 +49,9 @@ export default function App() {
       } catch (e) {
         console.error('Error restaurando sesión:', e)
         localStorage.removeItem('cla021_session')
+        // FIX: setLoading(false) en catch garantizado
       } finally {
-        setLoading(false)
+        setLoading(false) // FIX: siempre se ejecuta
       }
     }
     restore()
@@ -62,10 +64,9 @@ export default function App() {
     localStorage.setItem('cla021_session', JSON.stringify(s))
   }
 
-  // Único punto de salida
   const leave = async () => {
     if (!session) return
-    leavingVoluntarily.current = true  // ← marcar salida voluntaria
+    leavingVoluntarily.current = true
     try {
       await svc.leaveRoom(session.roomId, userKey)
     } catch (e) {
@@ -77,16 +78,14 @@ export default function App() {
     }
   }
 
-  // Manejar kick
   const handleKicked = useCallback(() => {
-    if (leavingVoluntarily.current) return  // ← ignorar si salió solo
+    if (leavingVoluntarily.current) return
     localStorage.removeItem('cla021_session')
     setSession(null)
     setWasKicked(true)
     setTimeout(() => setWasKicked(false), 5000)
   }, [])
 
-  // Marcar offline al cerrar tab pero NO borrar sesión
   useEffect(() => {
     if (!session) return
     const handler = () => svc.markOffline(session.roomId, userKey)
@@ -95,31 +94,30 @@ export default function App() {
   }, [session, userKey])
 
   if (loading) return (
-  <div style={{
-    height: '100vh', display: 'grid', placeItems: 'center',
-    background: '#0d0f14', color: '#6b7a9e',
-  }}>
-    <div style={{ textAlign: 'center' }}>
-      <img
-        src="./logo.png"
-        alt="CLA021POKER"
-        style={{
-          width: '72px', height: '72px',
-          objectFit: 'contain', borderRadius: '16px',
-          marginBottom: '1rem',
-          boxShadow: '0 8px 32px rgba(124,58,237,.3)',
-        }}
-      />
-      <p style={{ fontFamily: "'Syne',sans-serif", letterSpacing: '.1em' }}>
-        Restaurando sesión…
-      </p>
+    <div style={{
+      height: '100vh', display: 'grid', placeItems: 'center',
+      background: '#0d0f14', color: '#6b7a9e',
+    }}>
+      <div style={{ textAlign: 'center' }}>
+        <img
+          src="./logo.png"
+          alt="CLA021POKER"
+          style={{
+            width: '72px', height: '72px',
+            objectFit: 'contain', borderRadius: '16px',
+            marginBottom: '1rem',
+            boxShadow: '0 8px 32px rgba(124,58,237,.3)',
+          }}
+        />
+        <p style={{ fontFamily: "'Syne',sans-serif", letterSpacing: '.1em' }}>
+          Restaurando sesión…
+        </p>
+      </div>
     </div>
-  </div>
   )
 
   return (
     <>
-      {/* Banner kicked */}
       {wasKicked && (
         <div style={{
           position: 'fixed', top: 0, left: 0, right: 0,

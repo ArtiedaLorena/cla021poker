@@ -196,12 +196,18 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
   const [allVotedPulse, setAllVotedPulse] = useState(false)
   const prevVotedCount                    = useRef(0)
   const prevRevealed                      = useRef(false)
+  // FIX #2 — Guard para evitar múltiples llamadas a revealVotes
+  const autoRevealedRef                   = useRef(false)
 
   const displayTime = useLocalTimer(timerTimeLeft, timerRunning)
 
   // Resetear voto al nueva ronda
   useEffect(() => {
-    if (room && !room.revealed) setMyVote(null)
+    if (room && !room.revealed) {
+      setMyVote(null)
+      // FIX #2 — Resetear guard al iniciar nueva ronda
+      autoRevealedRef.current = false
+    }
   }, [room?.current_story])
 
   // Sincronizar duración timer
@@ -209,21 +215,35 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
     if (timerDuration) setTimerDur(timerDuration)
   }, [timerDuration])
 
-  // Toasts automáticos
+  // FIX #11 — Toasts automáticos: usar ref para saber si es el mount inicial
+  const isMountedRef = useRef(false)
   useEffect(() => {
     if (!room) return
-    if (votedCount > prevVotedCount.current && prevVotedCount.current > 0) {
+
+    // Ignorar el primer render (mount) para no mostrar toasts falsos
+    if (!isMountedRef.current) {
+      isMountedRef.current = true
+      prevVotedCount.current = votedCount
+      // Setear pulse correctamente si al entrar ya todos votaron
+      if (votedCount > 0 && votedCount === totalCount && !room.revealed) {
+        setAllVotedPulse(true)
+      }
+      return
+    }
+
+    if (votedCount > prevVotedCount.current) {
       const diff = votedCount - prevVotedCount.current
       addToast(`${diff} participante${diff > 1 ? 's' : ''} votó`, 'info', 2000)
     }
     prevVotedCount.current = votedCount
-    if (votedCount > 0 && votedCount === totalCount) {
+
+    if (votedCount > 0 && votedCount === totalCount && !room.revealed) {
       setAllVotedPulse(true)
       addToast('¡Todos votaron! Podés revelar 🎉', 'success', 4000)
     } else {
       setAllVotedPulse(false)
     }
-  }, [votedCount, totalCount])
+  }, [votedCount, totalCount, addToast])  // FIX #12 — addToast incluido en deps
 
   useEffect(() => {
     if (!room) return
@@ -235,17 +255,28 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
       }
     }
     prevRevealed.current = room.revealed ?? false
-  }, [room?.revealed, allAgreed])
+  }, [room?.revealed, allAgreed, addToast])  // FIX #12 — addToast incluido en deps
 
-  // Auto-reveal cuando timer llega a 0
+  // FIX #2 — Auto-reveal con guard para evitar llamadas múltiples
   useEffect(() => {
-    if (displayTime <= 0 && timerRunning && isFacilitator) {
+    if (
+      displayTime <= 0 &&
+      timerRunning &&
+      isFacilitator &&
+      !autoRevealedRef.current &&
+      !room?.revealed
+    ) {
+      autoRevealedRef.current = true
       addToast('⏰ Tiempo agotado — revelando votos', 'warning', 3000)
       svc.revealVotes(roomId)
     }
-  }, [displayTime, timerRunning, isFacilitator, roomId])
+  }, [displayTime, timerRunning, isFacilitator, roomId, room?.revealed, addToast])
 
   // ── Acciones ──────────────────────────────────────────────────────────
+
+  // FIX #10 — vote() solo registra el voto, el botón "Confirmar" ya no
+  // llama vote() de nuevo. La carta seleccionada vota inmediatamente
+  // y el botón confirmar es solo visual feedback
   const vote = useCallback(async (v) => {
     if (room?.revealed || !room?.current_story) return
     setMyVote(v)
@@ -256,7 +287,7 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
       addToast('Error al registrar el voto', 'error')
       setMyVote(null)
     }
-  }, [room?.revealed, room?.current_story, roomId, userKey])
+  }, [room?.revealed, room?.current_story, roomId, userKey, addToast])
 
   const startRound = async () => {
     if (!story.trim()) return
@@ -345,10 +376,15 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
     }
   }
 
+  // FIX #20 — handleTimerDurChange con try/catch
   const handleTimerDurChange = async (s) => {
     setTimerDur(s)
     if (!timerRunning) {
-      await svc.updateTimerDuration(roomId, s)
+      try {
+        await svc.updateTimerDuration(roomId, s)
+      } catch {
+        addToast('Error al actualizar la duración del timer', 'error')
+      }
     }
   }
 
@@ -372,36 +408,36 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
   }
 
   if (loading) return (
-  <div style={{
-    height: '100vh', display: 'grid', placeItems: 'center',
-    background: '#0d0f14', color: '#6b7a9e',
-  }}>
-    <div style={{ textAlign: 'center' }}>
-      <img
-        src="./logo.png"
-        alt="CLA021POKER"
-        style={{
-          width: '72px', height: '72px',
-          objectFit: 'contain', borderRadius: '16px',
-          marginBottom: '1rem',
-          boxShadow: '0 8px 32px rgba(124,58,237,.3)',
-        }}
-      />
-      <p style={{ fontFamily: "'Syne',sans-serif" }}>Conectando a la sala…</p>
+    <div style={{
+      height: '100vh', display: 'grid', placeItems: 'center',
+      background: '#0d0f14', color: '#6b7a9e',
+    }}>
+      <div style={{ textAlign: 'center' }}>
+        <img
+          src="./logo.png"
+          alt="CLA021POKER"
+          style={{
+            width: '72px', height: '72px',
+            objectFit: 'contain', borderRadius: '16px',
+            marginBottom: '1rem',
+            boxShadow: '0 8px 32px rgba(124,58,237,.3)',
+          }}
+        />
+        <p style={{ fontFamily: "'Syne',sans-serif" }}>Conectando a la sala…</p>
+      </div>
     </div>
-  </div>
-)
+  )
 
   if (showHistory) return (
     <HistoryPanel rounds={rounds} onBack={() => setShowHistory(false)}/>
   )
 
-  const timerPct   = displayTime / Math.max(timerDur, 1)
-  const timerR     = 44
-  const timerCirc  = 2 * Math.PI * timerR
-  const urgent     = displayTime <= 10 && timerRunning
-  const mins       = Math.floor(displayTime / 60)
-  const secs       = displayTime % 60
+  const timerPct    = displayTime / Math.max(timerDur, 1)
+  const timerR      = 44
+  const timerCirc   = 2 * Math.PI * timerR
+  const urgent      = displayTime <= 10 && timerRunning
+  const mins        = Math.floor(displayTime / 60)
+  const secs        = displayTime % 60
   const timeDisplay = mins > 0
     ? `${mins}:${secs.toString().padStart(2, '0')}`
     : `${displayTime}s`
@@ -478,7 +514,6 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
         {/* ── LEFT PANEL ── */}
         <aside className="left-panel">
 
-          {/* Cartel facilitador sin historia */}
           {isFacilitator && !roundActive && !isRevealed && (
             <div className="fac-hint">
               <div className="fac-hint-icon">👆</div>
@@ -543,19 +578,19 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
                 </button>
               ))}
             </div>
+            {/* FIX #10 — Botón confirmar es solo indicador visual, no vuelve a llamar vote() */}
             {roundActive && !isRevealed && (
-              <button
+              <div
                 className={`lp-confirm-btn ${myVote ? 'ready' : 'waiting'}`}
-                onClick={() => myVote && vote(myVote)}
-                disabled={!myVote}
               >
-                {myVote ? '✓ Confirmar Voto' : 'Elige una carta…'}
-              </button>
+                {myVote ? '✓ Voto registrado' : 'Elige una carta…'}
+              </div>
             )}
           </div>
 
           {/* Jugadores */}
-          <div className="lp-section lp-players-section">
+          {/* FIX #22 — Clase lp-players-section eliminada (no existe en CSS) */}
+          <div className="lp-section">
             <div className="lp-label-row">
               <span className="lp-label">Jugadores ({totalCount})</span>
               <span className="lp-label-icon">⇅</span>
@@ -579,7 +614,6 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
                   {isRevealed && votesMap[p.user_key] &&
                     <span className="lp-vote-shown">{votesMap[p.user_key]}</span>
                   }
-                  {/* Botón kick — solo facilitador, no sobre sí mismo */}
                   {isFacilitator
                     && p.user_key !== userKey
                     && p.user_key !== room?.facilitator_id && (
@@ -727,8 +761,10 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
                   <div key={f} className="res-row">
                     <span className="res-val">{f}</span>
                     <div className="res-track">
-                      <div className="res-bar"
-                        style={{ width: `${(cnt / totalCount) * 100}%` }}/>
+                      <div
+                        className="res-bar"
+                        style={{ width: `${(cnt / totalCount) * 100}%` }}
+                      />
                     </div>
                     <span className="res-avs">{who.map(p => p.avatar).join('')}</span>
                     <span className="res-cnt">{cnt}x</span>
