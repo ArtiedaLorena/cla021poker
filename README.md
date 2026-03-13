@@ -27,19 +27,14 @@ CLA021POKER es una aplicación de **Planning Poker** para equipos ágiles. Permi
 ---
 
 ## 🖼️ Screenshots
-
-<div align="center">
-
 ### Lobby
-![Lobby](docs/screenshots/lobby.png)
+![Lobby](./docs/screenshots/lobby.png)
 
 ### Mesa de juego
-![Room](./public/room.png)
+![Room](./docs/screenshots//room.png)
 
 ### Votos revelados
-![Revealed](./public/revealed.png)
-
-</div>
+![Revealed](./docs/screenshots/revealed.png)
 
 ---
 
