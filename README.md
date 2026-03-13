@@ -167,11 +167,6 @@ cp .env.example .env.local
 
 Editá `.env.local` con tus credenciales de Supabase:
 
-```env
-VITE_SUPABASE_URL=https://xxxxxxxxxxxx.supabase.co
-VITE_SUPABASE_ANON_KEY=tu_anon_key_aqui
-```
-
 ### 4. Correr en desarrollo
 
 ```bash
