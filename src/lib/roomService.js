@@ -1,10 +1,18 @@
 import { supabase } from './supabase.js'
 
-// FIX #6 — Verificar unicidad del código antes de usarlo
+// FIX: Generación robusta de código de 5 caracteres
+function generateCode() {
+  const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+  return Array.from(
+    { length: 5 },
+    () => chars[Math.floor(Math.random() * chars.length)]
+  ).join('')
+}
+
 async function generateUniqueCode() {
   const MAX_ATTEMPTS = 10
   for (let i = 0; i < MAX_ATTEMPTS; i++) {
-    const code = Math.random().toString(36).substring(2, 7).toUpperCase()
+    const code = generateCode()
     const { data } = await supabase
       .from('rooms')
       .select('id')
@@ -17,18 +25,19 @@ async function generateUniqueCode() {
 
 // ── Rooms ─────────────────────────────────────────────────────────────────
 
-export async function createRoom(userKey) {
+export async function createRoom(userKey, cardMode = 'fibonacci') {
   const code = await generateUniqueCode()
   const { data, error } = await supabase
     .from('rooms')
     .insert({
       code,
-      revealed: false,
-      current_story: '',
-      facilitator_id: userKey,
+      revealed:         false,
+      current_story:    '',
+      facilitator_id:   userKey,
       timer_started_at: null,
-      timer_duration: 60,
-      timer_running: false,
+      timer_duration:   60,
+      timer_running:    false,
+      card_mode:        cardMode,
     })
     .select()
     .single()
@@ -46,13 +55,39 @@ export async function getRoom(code) {
   return data || null
 }
 
+// FIX: validación + .select() para confirmar que se guardó
+export async function setCardMode(roomId, cardMode) {
+  const validModes = ['fibonacci', 'tshirt']
+  if (!validModes.includes(cardMode)) {
+    throw new Error(`Modo inválido: ${cardMode}`)
+  }
+
+  const { data, error } = await supabase
+    .from('rooms')
+    .update({ card_mode: cardMode })
+    .eq('id', roomId)
+    .select()
+    .single()
+
+  if (error) throw error
+  console.log('[setCardMode] Guardado en DB:', data?.card_mode)
+  return data
+}
+
 // ── Participants ──────────────────────────────────────────────────────────
 
-export async function joinRoom(roomId, userKey, name, avatar) {
+export async function joinRoom(roomId, userKey, name, avatar, isSpectator = false) {
   const { error } = await supabase
     .from('participants')
     .upsert(
-      { room_id: roomId, user_key: userKey, name, avatar, is_online: true },
+      {
+        room_id:      roomId,
+        user_key:     userKey,
+        name,
+        avatar,
+        is_online:    true,
+        is_spectator: isSpectator,
+      },
       { onConflict: 'room_id,user_key' }
     )
   if (error) throw error
@@ -81,7 +116,8 @@ export async function leaveRoom(roomId, userKey) {
     .eq('id', roomId)
     .single()
 
-  if (room?.revealed !== false) {
+  // FIX: borrar voto solo si la ronda está ACTIVA (no revelada)
+  if (room?.revealed === false) {
     await supabase
       .from('votes')
       .delete()
@@ -141,6 +177,23 @@ export async function transferFacilitator(roomId, toKey) {
   if (error) throw error
 }
 
+export async function setSpectatorRole(roomId, userKey, isSpectator) {
+  if (!isSpectator) {
+    await supabase
+      .from('votes')
+      .delete()
+      .eq('room_id', roomId)
+      .eq('user_key', userKey)
+  }
+
+  const { error } = await supabase
+    .from('participants')
+    .update({ is_spectator: isSpectator })
+    .eq('room_id', roomId)
+    .eq('user_key', userKey)
+  if (error) throw error
+}
+
 // ── Voting ────────────────────────────────────────────────────────────────
 
 export async function castVote(roomId, userKey, value) {
@@ -168,17 +221,16 @@ export async function setStory(roomId, story) {
   const { error } = await supabase
     .from('rooms')
     .update({
-      current_story: story,
-      revealed: false,
-      updated_at: new Date().toISOString(),
-      timer_running: false,
+      current_story:    story,
+      revealed:         false,
+      updated_at:       new Date().toISOString(),
+      timer_running:    false,
       timer_started_at: null,
     })
     .eq('id', roomId)
   if (error) throw error
 }
 
-// FIX #4 — Traer TODOS los participantes para el snapshot (no solo online)
 export async function revealVotes(roomId) {
   const [{ data: room }, votes] = await Promise.all([
     supabase.from('rooms').select('*').eq('id', roomId).single(),
@@ -192,24 +244,54 @@ export async function revealVotes(roomId) {
     .select('*')
     .eq('room_id', roomId)
 
-  const numVals = votes
-    .filter(v => v.value !== '?' && v.value !== '☕')
-    .map(v => v.value === '½' ? 0.5 : Number(v.value))
+  const votersList  = (allParticipants || []).filter(p => !p.is_spectator)
+  const voterKeys   = new Set(votersList.map(p => p.user_key))
+  const isFibonacci = room?.card_mode !== 'tshirt'
+  let result = '?'
 
-  const avg = numVals.length
-    ? (numVals.reduce((a, b) => a + b, 0) / numVals.length).toFixed(1)
-    : '?'
+  if (isFibonacci) {
+    const numVals = votes
+      .filter(v => voterKeys.has(v.user_key))
+      .filter(v => v.value !== '?' && v.value !== '☕')
+      .map(v => Number(v.value))
 
-  const votesSnapshot = Object.fromEntries(votes.map(v => [v.user_key, v.value]))
+    result = numVals.length
+      ? (numVals.reduce((a, b) => a + b, 0) / numVals.length).toFixed(1)
+      : '?'
+  } else {
+    const tshirtVotes = votes
+      .filter(v => voterKeys.has(v.user_key))
+      .filter(v => v.value !== '?' && v.value !== '☕')
+      .map(v => v.value)
+
+    if (tshirtVotes.length) {
+      const freq = tshirtVotes.reduce((acc, v) => {
+        acc[v] = (acc[v] || 0) + 1
+        return acc
+      }, {})
+      const maxFreq = Math.max(...Object.values(freq))
+      const modes   = Object.entries(freq)
+        .filter(([, f]) => f === maxFreq)
+        .map(([v]) => v)
+      result = modes.join(' / ')
+    }
+  }
+
+  const votesSnapshot = Object.fromEntries(
+    votes.map(v => [v.user_key, v.value])
+  )
   const participantsSnapshot = Object.fromEntries(
-    (allParticipants || []).map(p => [p.user_key, { name: p.name, avatar: p.avatar }])
+    (allParticipants || []).map(p => [
+      p.user_key,
+      { name: p.name, avatar: p.avatar },
+    ])
   )
 
   const { error } = await supabase
     .from('rooms')
     .update({
-      revealed: true,
-      updated_at: new Date().toISOString(),
+      revealed:      true,
+      updated_at:    new Date().toISOString(),
       timer_running: false,
     })
     .eq('id', roomId)
@@ -217,11 +299,12 @@ export async function revealVotes(roomId) {
 
   if (room?.current_story && votes.length > 0) {
     await supabase.from('rounds').insert({
-      room_id: roomId,
-      story: room.current_story,
-      votes_snapshot: votesSnapshot,
+      room_id:               roomId,
+      story:                 room.current_story,
+      votes_snapshot:        votesSnapshot,
       participants_snapshot: participantsSnapshot,
-      average: avg,
+      average:               result,
+      card_mode:             room.card_mode ?? 'fibonacci',
     })
   }
 }
@@ -231,12 +314,12 @@ export async function resetRound(roomId) {
   const { error } = await supabase
     .from('rooms')
     .update({
-      revealed: false,
-      current_story: '',
-      updated_at: new Date().toISOString(),
-      timer_running: false,
+      revealed:         false,
+      current_story:    '',
+      updated_at:       new Date().toISOString(),
+      timer_running:    false,
       timer_started_at: null,
-      timer_duration: 60,
+      timer_duration:   60,
     })
     .eq('id', roomId)
   if (error) throw error
@@ -246,8 +329,8 @@ export async function startTimer(roomId, duration) {
   const { error } = await supabase
     .from('rooms')
     .update({
-      timer_running: true,
-      timer_duration: duration,
+      timer_running:    true,
+      timer_duration:   duration,
       timer_started_at: new Date().toISOString(),
     })
     .eq('id', roomId)
@@ -258,7 +341,7 @@ export async function stopTimer(roomId) {
   const { error } = await supabase
     .from('rooms')
     .update({
-      timer_running: false,
+      timer_running:    false,
       timer_started_at: null,
     })
     .eq('id', roomId)

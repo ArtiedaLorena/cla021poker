@@ -1,4 +1,4 @@
-import { useMemo } from 'react'
+import { useMemo, useRef } from 'react'
 
 const VW = 900
 const VH = 540
@@ -33,12 +33,24 @@ function usePositions(count) {
 }
 
 export default function PokerTable({
-  participants, votesMap, revealed, myKey,
-  facilitatorKey, onTransfer, currentStory, avg, allAgreed,
-  votedCount, totalCount
+  participants,
+  spectatorKeys = new Set(), // FIX #5 — recibir keys de espectadores para mostrarlos
+  votesMap,
+  revealed,
+  myKey,
+  facilitatorKey,
+  onTransfer,
+  currentStory,
+  avg,
+  allAgreed,
+  votedCount,
+  totalCount,
 }) {
   const positions = usePositions(participants.length)
   const AV = 52
+
+  // FIX #19 — useRef para el drag en lugar de guardar en el DOM element
+  const dragStartY = useRef(null)
 
   return (
     <svg
@@ -68,7 +80,7 @@ export default function PokerTable({
         </filter>
       </defs>
 
-      {/* Table */}
+      {/* Mesa */}
       <ellipse cx={CX} cy={CY + 16} rx={340} ry={220} fill="rgba(0,0,0,0.55)" filter="url(#tableShadow)"/>
       <ellipse cx={CX} cy={CY} rx={335} ry={215} fill="#3d2b0a"/>
       <ellipse cx={CX} cy={CY} rx={325} ry={205} fill="#5a3e10"/>
@@ -76,10 +88,9 @@ export default function PokerTable({
       <ellipse cx={CX} cy={CY} rx={310} ry={190} fill="url(#feltGlow)"/>
       <ellipse cx={CX} cy={CY} rx={295} ry={175} fill="none" stroke="#ffffff08" strokeWidth="1.5"/>
 
-      {/* Center content */}
+      {/* Contenido central */}
       {avg && revealed ? (
         <g>
-          {/* FIX — rect más alto para contener el número */}
           <rect x={CX-110} y={CY-62} width={220} height={118} rx="14"
             fill="rgba(0,0,0,0.55)" stroke="#ffffff12" strokeWidth="1"/>
           <text x={CX} y={CY+12} textAnchor="middle" fontSize="52" fontWeight="800"
@@ -120,17 +131,18 @@ export default function PokerTable({
         </text>
       )}
 
-      {/* Players */}
+      {/* Jugadores */}
       {participants.map((p, i) => {
-        const pos   = positions[i]
+        const pos        = positions[i]
         if (!pos) return null
-        const uid   = p.user_key
-        const voted = votesMap[uid] !== undefined
-        const isMe  = uid === myKey
-        const isFac = uid === facilitatorKey
-        const val   = votesMap[uid]
-        const color = getColor(i)
-        const half  = AV / 2
+        const uid        = p.user_key
+        const voted      = votesMap[uid] !== undefined
+        const isMe       = uid === myKey
+        const isFac      = uid === facilitatorKey
+        const isSpect    = spectatorKeys.has(uid) // FIX #5
+        const val        = votesMap[uid]
+        const color      = getColor(i)
+        const half       = AV / 2
 
         return (
           <g key={uid}>
@@ -138,11 +150,14 @@ export default function PokerTable({
               <rect
                 x={pos.x - half} y={pos.y - half}
                 width={AV} height={AV} rx="14"
-                fill={color}
-                stroke={isMe ? '#ffffff' : isFac ? '#fbbf24' : 'transparent'}
-                strokeWidth={isMe || isFac ? 3 : 0}
+                fill={isSpect ? '#1a2a4a' : color} // Espectadores en color diferente
+                stroke={isMe ? '#ffffff' : isFac ? '#fbbf24' : isSpect ? '#3b82f6' : 'transparent'}
+                strokeWidth={isMe || isFac || isSpect ? 3 : 0}
+                strokeDasharray={isSpect ? '4 2' : 'none'} // Borde punteado para espectadores
               />
-              {voted && !revealed && (
+
+              {/* Overlay si ya votó y no reveló */}
+              {voted && !revealed && !isSpect && (
                 <rect
                   x={pos.x - half} y={pos.y - half}
                   width={AV} height={AV} rx="14"
@@ -150,34 +165,44 @@ export default function PokerTable({
                 />
               )}
 
-              {/* FIX #11 — foreignObject para emojis complejos (ZWJ sequences) */}
+              {/* FIX #4 — Eliminar atributo xmlns inválido en JSX */}
               <foreignObject
                 x={pos.x - half} y={pos.y - half}
                 width={AV} height={AV}
                 style={{ overflow: 'visible', pointerEvents: 'none' }}
               >
                 <div
-                  xmlns="http://www.w3.org/1999/xhtml"
                   style={{
-                    width: AV, height: AV,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: '24px',
-                    lineHeight: 1,
-                    userSelect: 'none',
+                    width:           AV,
+                    height:          AV,
+                    display:         'flex',
+                    alignItems:      'center',
+                    justifyContent:  'center',
+                    fontSize:        '24px',
+                    lineHeight:      1,
+                    userSelect:      'none',
                   }}
                 >
                   {p.avatar}
                 </div>
               </foreignObject>
 
-              {voted && !revealed && (
+              {/* Badge espectador */}
+              {isSpect && (
+                <text
+                  x={pos.x + half - 10} y={pos.y - half + 16}
+                  textAnchor="middle" fontSize="12">👁</text>
+              )}
+
+              {/* Check si votó */}
+              {voted && !revealed && !isSpect && (
                 <text
                   x={pos.x + half - 10} y={pos.y - half + 16}
                   textAnchor="middle" fontSize="14" fill="#6ee7b7">✓</text>
               )}
-              {revealed && voted && (
+
+              {/* Valor revelado */}
+              {revealed && voted && !isSpect && (
                 <g>
                   <rect
                     x={pos.x + half - 18} y={pos.y - half - 4}
@@ -194,28 +219,41 @@ export default function PokerTable({
               )}
             </g>
 
+            {/* Corona facilitador */}
             {isFac && (
               <text x={pos.x} y={pos.y - half - 4} textAnchor="middle" fontSize="16">👑</text>
             )}
 
+            {/* Nombre */}
             <text
               x={pos.x} y={pos.y + half + 18}
               textAnchor="middle"
               fontSize="13" fontWeight="700" fontFamily="'Syne',sans-serif"
-              fill={isMe ? '#ffffff' : '#dde4f5'}
+              fill={isMe ? '#ffffff' : isSpect ? '#93c5fd' : '#dde4f5'}
               stroke="rgba(0,0,0,0.8)" strokeWidth="4" paintOrder="stroke"
             >
-              {isMe ? `${p.name.slice(0, 10)} (tú)` : p.name.slice(0, 12)}
+              {isMe
+                ? `${p.name.slice(0, 10)} (tú)`
+                : isSpect
+                  ? `${p.name.slice(0, 10)} 👁`
+                  : p.name.slice(0, 12)
+              }
             </text>
 
-            {/* FIX #16 — onPointerUp con delta para evitar clicks accidentales en mobile */}
-            {myKey === facilitatorKey && uid !== facilitatorKey && (
+            {/* Botón transferir facilitador */}
+            {/* FIX #19 — useRef para drag, no guardar en DOM element */}
+            {myKey === facilitatorKey && uid !== facilitatorKey && !isSpect && (
               <g
                 style={{ cursor: 'pointer' }}
-                onPointerDown={e => { e.currentTarget._startY = e.clientY }}
+                onPointerDown={() => { dragStartY.current = null }}
+                onPointerMove={e => {
+                  if (dragStartY.current === null) dragStartY.current = e.clientY
+                }}
                 onPointerUp={e => {
-                  const delta = Math.abs(e.clientY - e.currentTarget._startY)
+                  const startY = dragStartY.current ?? e.clientY
+                  const delta  = Math.abs(e.clientY - startY)
                   if (delta < 5) onTransfer(uid)
+                  dragStartY.current = null
                 }}
               >
                 <circle
