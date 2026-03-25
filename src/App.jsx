@@ -1,13 +1,16 @@
 import { useState, useEffect, useCallback, useRef, Component } from 'react'
 import Lobby from './components/Lobby.jsx'
-import Room from './components/Room.jsx'
+import Room  from './components/Room.jsx'
 import * as svc from './lib/roomService.js'
 
 const generateId = () => crypto.randomUUID()
 
 function getUserKey() {
   let key = localStorage.getItem('cla021_userkey')
-  if (!key) { key = generateId(); localStorage.setItem('cla021_userkey', key) }
+  if (!key) {
+    key = generateId()
+    localStorage.setItem('cla021_userkey', key)
+  }
   return key
 }
 
@@ -27,9 +30,18 @@ class ErrorBoundary extends Component {
     super(props)
     this.state = { hasError: false }
   }
+
   static getDerivedStateFromError() {
     return { hasError: true }
   }
+
+  // FIX #15 — Loguear el error para debugging y servicios de monitoreo
+  componentDidCatch(error, info) {
+    console.error('❌ ErrorBoundary caught:', error, info.componentStack)
+    // Acá podés integrar Sentry u otro servicio:
+    // Sentry.captureException(error, { extra: info })
+  }
+
   render() {
     if (this.state.hasError) {
       return (
@@ -71,9 +83,9 @@ class ErrorBoundary extends Component {
 // ── App Content ───────────────────────────────────────────────────────────
 function AppContent() {
   const [userKey]                 = useState(getUserKey)
-  const [session, setSession]     = useState(null)
-  const [loading, setLoading]     = useState(true)
-  const [wasKicked, setWasKicked] = useState(false)
+  const [session,    setSession]  = useState(null)
+  const [loading,    setLoading]  = useState(true)
+  const [wasKicked,  setWasKicked]= useState(false)
   const leavingVoluntarily        = useRef(false)
 
   useEffect(() => {
@@ -90,7 +102,14 @@ function AppContent() {
           setLoading(false)
           return
         }
-        await svc.joinRoom(room.id, userKey, stored.name, stored.avatar)
+        // Restaurar sesión respetando el rol de espectador guardado
+        await svc.joinRoom(
+          room.id,
+          userKey,
+          stored.name,
+          stored.avatar,
+          stored.isSpectator ?? false
+        )
         setSession({ ...stored, roomId: room.id })
       } catch {
         localStorage.removeItem('cla021_session')
@@ -101,11 +120,10 @@ function AppContent() {
     restore()
   }, [userKey])
 
-  // FIX #5 — join con try/catch, re-lanza para que Lobby lo capture
-  const join = async ({ name, avatar, roomCode, roomId }) => {
+  const join = async ({ name, avatar, roomCode, roomId, isSpectator = false }) => {
     try {
-      await svc.joinRoom(roomId, userKey, name, avatar)
-      const s = { name, avatar, roomCode, roomId }
+      await svc.joinRoom(roomId, userKey, name, avatar, isSpectator)
+      const s = { name, avatar, roomCode, roomId, isSpectator }
       setSession(s)
       localStorage.setItem('cla021_session', JSON.stringify(s))
     } catch {
@@ -119,7 +137,7 @@ function AppContent() {
     try {
       await svc.leaveRoom(session.roomId, userKey)
     } catch {
-      // silencioso en producción
+      // Silencioso en producción
     } finally {
       localStorage.removeItem('cla021_session')
       setSession(null)

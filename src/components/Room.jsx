@@ -1,9 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { useRoom } from '../hooks/useRoom.js'
+import { useRoom, CARD_MODES } from '../hooks/useRoom.js'
 import PokerTable from './PokerTable.jsx'
 import * as svc from '../lib/roomService.js'
-
-const FIBONACCI = ['1', '2', '3', '5', '8', '13', '20', '☕']
 
 // ── Toast ─────────────────────────────────────────────────────────────────
 function useToast() {
@@ -110,18 +108,14 @@ function ConfirmModal({ title, body, onConfirm, onCancel }) {
 
 // ── History Panel ─────────────────────────────────────────────────────────
 function HistoryPanel({ rounds, onBack }) {
-  // FIX #13 — Ordenar explícitamente por fecha descendente
   const sorted = [...rounds].sort(
     (a, b) => new Date(b.created_at) - new Date(a.created_at)
   )
-
   return (
     <div className="room">
       <header className="rh">
         <div className="rh-left">
-          <img
-            src="/logo.png"
-            alt="CLA021POKER"
+          <img src="/logo.png" alt="CLA021POKER"
             style={{ width: '32px', height: '32px', objectFit: 'contain', borderRadius: '8px' }}
           />
           <span className="rh-title">CLA021POKER</span>
@@ -141,7 +135,10 @@ function HistoryPanel({ rounds, onBack }) {
                 <div key={h.id} className="hist-item">
                   <div className="hist-top">
                     <span className="hist-story">{h.story}</span>
-                    <span className="hist-avg">{h.average} pts</span>
+                    <span className="hist-avg">
+                      {h.average}
+                      {h.card_mode !== 'tshirt' && ' pts'}
+                    </span>
                   </div>
                   <div className="hist-chips">
                     {Object.entries(h.votes_snapshot || {}).map(([key, v]) => (
@@ -149,6 +146,11 @@ function HistoryPanel({ rounds, onBack }) {
                         {h.participants_snapshot?.[key]?.avatar} <b>{v}</b>
                       </span>
                     ))}
+                    {h.card_mode && (
+                      <span className="hist-mode-badge">
+                        {CARD_MODES[h.card_mode]?.icon} {CARD_MODES[h.card_mode]?.label}
+                      </span>
+                    )}
                     <span className="hist-time">
                       {new Date(h.created_at).toLocaleTimeString()}
                     </span>
@@ -162,42 +164,38 @@ function HistoryPanel({ rounds, onBack }) {
   )
 }
 
-// ── Timer local sincronizado ───────────────────────────────────────────────
-// FIX #3 — Recibe timerStartedAt y timerDuration para re-sincronizar
-// cuando el tab vuelve del background
-function useLocalTimer(timerTimeLeft, timerRunning, timerStartedAt, timerDuration) {
-  const [displayTime, setDisplayTime] = useState(timerTimeLeft)
+// ── Timer ─────────────────────────────────────────────────────────────────
+function useLocalTimer(timerRunning, timerStartedAt, timerDuration) {
+  const [displayTime, setDisplayTime] = useState(() => {
+    if (!timerRunning || !timerStartedAt) return timerDuration ?? 60
+    const elapsed = Math.floor(
+      (Date.now() - new Date(timerStartedAt).getTime()) / 1000
+    )
+    return Math.max(0, (timerDuration ?? 60) - elapsed)
+  })
 
   useEffect(() => {
-    setDisplayTime(timerTimeLeft)
-  }, [timerTimeLeft])
-
-  useEffect(() => {
-    if (!timerRunning) {
-      setDisplayTime(timerTimeLeft)
+    if (!timerRunning || !timerStartedAt) {
+      setDisplayTime(timerDuration ?? 60)
       return
     }
-
-    const interval = setInterval(() => {
-      setDisplayTime(t => Math.max(0, t - 1))
-    }, 1000)
-
-    // FIX #3 — Re-sincronizar cuando el tab vuelve a estar visible
+    const calcTimeLeft = () => {
+      const elapsed = Math.floor(
+        (Date.now() - new Date(timerStartedAt).getTime()) / 1000
+      )
+      return Math.max(0, (timerDuration ?? 60) - elapsed)
+    }
+    setDisplayTime(calcTimeLeft())
+    const interval = setInterval(() => setDisplayTime(calcTimeLeft()), 1000)
     const handleVisibility = () => {
-      if (document.visibilityState === 'visible' && timerStartedAt) {
-        const elapsed = Math.floor(
-          (Date.now() - new Date(timerStartedAt).getTime()) / 1000
-        )
-        setDisplayTime(Math.max(0, (timerDuration ?? 60) - elapsed))
-      }
+      if (document.visibilityState === 'visible') setDisplayTime(calcTimeLeft())
     }
     document.addEventListener('visibilitychange', handleVisibility)
-
     return () => {
       clearInterval(interval)
       document.removeEventListener('visibilitychange', handleVisibility)
     }
-  }, [timerRunning, timerTimeLeft, timerStartedAt, timerDuration])
+  }, [timerRunning, timerStartedAt, timerDuration])
 
   return displayTime
 }
@@ -205,64 +203,71 @@ function useLocalTimer(timerTimeLeft, timerRunning, timerStartedAt, timerDuratio
 // ── Room ──────────────────────────────────────────────────────────────────
 export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
   const {
-    room, participants, votesMap, rounds,
-    loading, isFacilitator, avg, allAgreed,
-    votedCount, totalCount,
-    timerTimeLeft, timerRunning, timerDuration, timerStartedAt,
+    room, participants, voters, spectators,
+    votesMap, rounds, loading,
+    isFacilitator, amISpectator, cardMode,
+    avg, allAgreed, votedCount, totalCount,
+    timerRunning, timerDuration, timerStartedAt,
   } = useRoom(roomId, userKey, onKicked)
 
   const { toasts, addToast } = useToast()
 
-  const [story, setStory]                 = useState('')
-  const [myVote, setMyVote]               = useState(null)
-  // FIX #14 — Inicializar con función lazy para evitar flash visual
-  const [timerDur, setTimerDur]           = useState(() => timerDuration || 60)
-  const [showHistory, setShowHistory]     = useState(false)
-  const [copied, setCopied]               = useState(false)
-  const [modal, setModal]                 = useState(null)
+  // FIX: doble fallback para cards
+  const cards = CARD_MODES[cardMode]?.cards ?? CARD_MODES.fibonacci.cards
+
+  const [story,         setStory]         = useState('')
+  const [myVote,        setMyVote]        = useState(null)
+  const [timerDur,      setTimerDur]      = useState(() => timerDuration || 60)
+  const [showHistory,   setShowHistory]   = useState(false)
+  const [copied,        setCopied]        = useState(false)
+  const [modal,         setModal]         = useState(null)
   const [allVotedPulse, setAllVotedPulse] = useState(false)
-  const prevVotedCount                    = useRef(0)
-  const prevRevealed                      = useRef(false)
-  const autoRevealedRef                   = useRef(false)
+  const [togglingRole,  setTogglingRole]  = useState(false)
 
-  // FIX #3 — Pasar timerStartedAt y timerDuration al hook
-  const displayTime = useLocalTimer(
-    timerTimeLeft,
-    timerRunning,
-    timerStartedAt,
-    timerDuration
-  )
+  const prevVotedCount     = useRef(0)
+  const prevRevealed       = useRef(false)
+  const autoRevealedRef    = useRef(false)
+  const allVotedToastShown = useRef(false)
+  const timerDurTimeout    = useRef(null)
 
-  // Resetear voto al nueva ronda
+  const displayTime = useLocalTimer(timerRunning, timerStartedAt, timerDuration)
+
+  // Debug log — borrar cuando confirmes que funciona
+  useEffect(() => {
+    if (room) {
+      console.log('[Room] card_mode en DB:', room.card_mode)
+      console.log('[Room] cardMode resuelto:', cardMode)
+      console.log('[Room] cards:', cards)
+    }
+  }, [room?.card_mode, cardMode])
+
+  // FIX: resetear al cambiar revealed O current_story
   useEffect(() => {
     if (room && !room.revealed) {
       setMyVote(null)
-      autoRevealedRef.current = false
+      autoRevealedRef.current    = false
+      allVotedToastShown.current = false
     }
-  }, [room?.current_story])
+  }, [room?.revealed, room?.current_story])
 
-  // Sincronizar duración timer
   useEffect(() => {
     if (timerDuration) setTimerDur(timerDuration)
   }, [timerDuration])
 
-  // FIX #8 — Limpiar story cuando se pierde el rol de facilitador
   useEffect(() => {
     if (!isFacilitator) setStory('')
   }, [isFacilitator])
 
-  // FIX #7 — Effect solo para mount inicial: setear valores base sin toasts
+  // FIX: inicializar refs cuando lleguen datos reales
   useEffect(() => {
     if (!room) return
-    prevVotedCount.current = votedCount
-    prevRevealed.current   = room.revealed ?? false
-    if (votedCount > 0 && votedCount === totalCount && !room.revealed) {
-      setAllVotedPulse(true)
+    if (prevVotedCount.current === 0 && votedCount > 0) {
+      prevVotedCount.current = votedCount
     }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []) // Solo al montar
+    prevRevealed.current = room.revealed ?? false
+  }, [room, votedCount])
 
-  // FIX #7 — Effect separado para cambios posteriores al mount
+  // FIX: toast anti-duplicado
   useEffect(() => {
     if (!room) return
     if (votedCount > prevVotedCount.current) {
@@ -270,33 +275,32 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
       addToast(`${diff} participante${diff > 1 ? 's' : ''} votó`, 'info', 2000)
     }
     prevVotedCount.current = votedCount
-
     if (votedCount > 0 && votedCount === totalCount && !room.revealed) {
       setAllVotedPulse(true)
-      addToast('¡Todos votaron! Podés revelar 🎉', 'success', 4000)
+      if (!allVotedToastShown.current) {
+        allVotedToastShown.current = true
+        addToast('¡Todos votaron! Podés revelar 🎉', 'success', 4000)
+      }
     } else if (!room.revealed) {
       setAllVotedPulse(false)
     }
-  }, [votedCount, totalCount, addToast])
+  }, [votedCount, totalCount, room?.revealed, addToast])
 
   useEffect(() => {
     if (!room) return
     if (room.revealed && !prevRevealed.current) {
-      if (allAgreed) {
-        addToast('¡Consenso total! 🎉', 'success', 5000)
-      } else {
-        addToast('Votos revelados — Analizá los resultados', 'info', 3000)
-      }
+      allAgreed
+        ? addToast('¡Consenso total! 🎉', 'success', 5000)
+        : addToast('Votos revelados — Analizá los resultados', 'info', 3000)
     }
     prevRevealed.current = room.revealed ?? false
   }, [room?.revealed, allAgreed, addToast])
 
-  // Auto-reveal con guard
   useEffect(() => {
     if (
-      displayTime <= 0 &&
-      timerRunning &&
-      isFacilitator &&
+      displayTime <= 0         &&
+      timerRunning             &&
+      isFacilitator            &&
       !autoRevealedRef.current &&
       !room?.revealed
     ) {
@@ -306,10 +310,13 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
     }
   }, [displayTime, timerRunning, isFacilitator, roomId, room?.revealed, addToast])
 
+  // Set de espectadores para PokerTable
+  const spectatorKeySet = new Set(spectators.map(s => s.user_key))
+
   // ── Acciones ──────────────────────────────────────────────────────────
 
   const vote = useCallback(async (v) => {
-    if (room?.revealed || !room?.current_story) return
+    if (amISpectator || room?.revealed || !room?.current_story) return
     setMyVote(v)
     try {
       await svc.castVote(roomId, userKey, v)
@@ -318,7 +325,7 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
       addToast('Error al registrar el voto', 'error')
       setMyVote(null)
     }
-  }, [room?.revealed, room?.current_story, roomId, userKey, addToast])
+  }, [amISpectator, room?.revealed, room?.current_story, roomId, userKey, addToast])
 
   const startRound = async () => {
     if (!story.trim()) return
@@ -351,7 +358,7 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
         } catch {
           addToast('Error al iniciar nueva ronda', 'error')
         }
-      }
+      },
     })
   }
 
@@ -368,7 +375,7 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
         } catch {
           addToast('Error al transferir el rol', 'error')
         }
-      }
+      },
     })
   }
 
@@ -385,8 +392,47 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
         } catch {
           addToast('Error al remover el participante', 'error')
         }
-      }
+      },
     })
+  }
+
+  // FIX: protección doble click
+  const toggleMySpectatorRole = async () => {
+    if (isFacilitator || togglingRole) return
+    setTogglingRole(true)
+    try {
+      await svc.setSpectatorRole(roomId, userKey, !amISpectator)
+      addToast(
+        amISpectator ? '¡Ahora sos jugador! 🃏' : 'Modo espectador activado 👁',
+        'info'
+      )
+    } catch {
+      addToast('Error al cambiar el rol', 'error')
+    } finally {
+      setTogglingRole(false)
+    }
+  }
+
+  // FIX: validación + guard de modo igual
+  const handleCardModeChange = async (mode) => {
+    if (mode === cardMode) {
+      addToast(`Ya estás en modo ${CARD_MODES[mode]?.label}`, 'info', 1500)
+      return
+    }
+    if (room?.current_story && !room?.revealed) {
+      addToast('No podés cambiar el modo durante una votación activa', 'warning')
+      return
+    }
+    try {
+      await svc.setCardMode(roomId, mode)
+      addToast(
+        `Modo cambiado a ${CARD_MODES[mode].label} ${CARD_MODES[mode].icon}`,
+        'success'
+      )
+    } catch (e) {
+      console.error('[handleCardModeChange] Error:', e)
+      addToast('Error al cambiar el modo', 'error')
+    }
   }
 
   const handleStartTimer = async () => {
@@ -407,18 +453,21 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
     }
   }
 
-  const handleTimerDurChange = async (s) => {
+  // FIX: debounce para evitar múltiples llamadas a DB
+  const handleTimerDurChange = (s) => {
     setTimerDur(s)
     if (!timerRunning) {
-      try {
-        await svc.updateTimerDuration(roomId, s)
-      } catch {
-        addToast('Error al actualizar la duración del timer', 'error')
-      }
+      clearTimeout(timerDurTimeout.current)
+      timerDurTimeout.current = setTimeout(async () => {
+        try {
+          await svc.updateTimerDuration(roomId, s)
+        } catch {
+          addToast('Error al actualizar la duración del timer', 'error')
+        }
+      }, 400)
     }
   }
 
-  // FIX #9 — copyCode con fallback para contextos sin clipboard API
   const copyCode = async () => {
     try {
       if (navigator.clipboard && window.isSecureContext) {
@@ -427,7 +476,7 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
         const el = document.createElement('textarea')
         el.value = roomCode
         el.style.position = 'fixed'
-        el.style.opacity = '0'
+        el.style.opacity  = '0'
         document.body.appendChild(el)
         el.focus()
         el.select()
@@ -446,29 +495,22 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
     setModal({
       title: '¿Salir de la sala?',
       body: 'Si salís, tu sesión se cerrará. Podés volver a unirte con el mismo código.',
-      onConfirm: () => {
-        setModal(null)
-        onLeave?.()
-      }
+      onConfirm: () => { setModal(null); onLeave?.() },
     })
   }
 
+  // ── Loading ───────────────────────────────────────────────────────────
   if (loading) return (
     <div style={{
       height: '100vh', display: 'grid', placeItems: 'center',
       background: '#0d0f14', color: '#6b7a9e',
     }}>
       <div style={{ textAlign: 'center' }}>
-        <img
-          src="./logo.png"
-          alt="CLA021POKER"
-          style={{
-            width: '72px', height: '72px',
-            objectFit: 'contain', borderRadius: '16px',
-            marginBottom: '1rem',
-            boxShadow: '0 8px 32px rgba(124,58,237,.3)',
-          }}
-        />
+        <img src="./logo.png" alt="CLA021POKER" style={{
+          width: '72px', height: '72px', objectFit: 'contain',
+          borderRadius: '16px', marginBottom: '1rem',
+          boxShadow: '0 8px 32px rgba(124,58,237,.3)',
+        }}/>
         <p style={{ fontFamily: "'Syne',sans-serif" }}>Conectando a la sala…</p>
       </div>
     </div>
@@ -478,6 +520,7 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
     <HistoryPanel rounds={rounds} onBack={() => setShowHistory(false)}/>
   )
 
+  // ── Variables derivadas ───────────────────────────────────────────────
   const timerPct    = displayTime / Math.max(timerDur, 1)
   const timerR      = 44
   const timerCirc   = 2 * Math.PI * timerR
@@ -491,6 +534,7 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
   const roundActive = !!room?.current_story
   const isRevealed  = room?.revealed ?? false
 
+  // ── Render ────────────────────────────────────────────────────────────
   return (
     <div className="room">
       <ToastContainer toasts={toasts}/>
@@ -506,14 +550,10 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
       {/* ── HEADER ── */}
       <header className="rh">
         <div className="rh-left">
-          <img
-            src="./logo.png"
-            alt="CLA021POKER"
-            style={{
-              width: '45px', height: '45px',
-              objectFit: 'contain', borderRadius: '8px',
-            }}
-          />
+          <img src="./logo.png" alt="CLA021POKER" style={{
+            width: '45px', height: '45px',
+            objectFit: 'contain', borderRadius: '8px',
+          }}/>
           <span className="rh-title">CLA021POKER</span>
           <span className="rh-sala">
             Sala: <b>{roomCode}</b>
@@ -521,15 +561,24 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
               {copied ? '✓' : '⧉'}
             </button>
           </span>
+          {/* FIX: badge siempre visible con fallback */}
+          <span className="rh-mode-badge">
+            {CARD_MODES[cardMode]?.icon ?? '🔢'}{' '}
+            {CARD_MODES[cardMode]?.label ?? 'Fibonacci'}
+          </span>
         </div>
+
         <div className="rh-right">
+          {amISpectator && (
+            <span className="rh-spectator-badge">👁 ESPECTADOR</span>
+          )}
           {roundActive && !isRevealed && (
             <span style={{
               padding: '.3rem .7rem', borderRadius: '7px',
               background: 'rgba(34,197,94,.1)',
               border: '1px solid #22c55e40',
-              color: '#22c55e', fontSize: '.72rem', fontWeight: 700,
-              letterSpacing: '.05em',
+              color: '#22c55e', fontSize: '.72rem',
+              fontWeight: 700, letterSpacing: '.05em',
             }}>
               ● EN VOTACIÓN
             </span>
@@ -539,8 +588,8 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
               padding: '.3rem .7rem', borderRadius: '7px',
               background: 'rgba(251,191,36,.1)',
               border: '1px solid #fbbf2440',
-              color: '#fbbf24', fontSize: '.72rem', fontWeight: 700,
-              letterSpacing: '.05em',
+              color: '#fbbf24', fontSize: '.72rem',
+              fontWeight: 700, letterSpacing: '.05em',
             }}>
               ● REVELADO
             </span>
@@ -573,6 +622,37 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
             </div>
           )}
 
+          {/* FIX: selector visible para facilitador entre rondas */}
+          {isFacilitator && !roundActive && (
+            <div className="lp-section">
+              <div className="lp-label">Modo de estimación</div>
+              <div className="lp-mode-selector">
+                {Object.entries(CARD_MODES).map(([key, mode]) => (
+                  <button
+                    key={key}
+                    className={`lp-mode-btn ${cardMode === key ? 'active' : ''}`}
+                    onClick={() => handleCardModeChange(key)}
+                    title={`Cambiar a ${mode.label}`}
+                  >
+                    <span className="lp-mode-btn-icon">{mode.icon}</span>
+                    <span className="lp-mode-btn-label">{mode.label}</span>
+                  </button>
+                ))}
+              </div>
+              {/* Indicador modo actual */}
+              <div style={{
+                fontSize: '.7rem',
+                color: 'var(--tx2)',
+                textAlign: 'center',
+                padding: '.15rem 0',
+              }}>
+                Activo: <b style={{ color: '#c4b5fd' }}>
+                  {CARD_MODES[cardMode]?.label ?? cardMode}
+                </b>
+              </div>
+            </div>
+          )}
+
           {/* Historia actual */}
           <div className="lp-section">
             <div className="lp-label">Historia actual</div>
@@ -582,7 +662,7 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
                     className="lp-story-input"
                     value={story}
                     onChange={e => setStory(e.target.value)}
-                    placeholder="Escribe la historia a estimar..."
+                    placeholder="Escribí la historia a estimar..."
                     onKeyDown={e => e.key === 'Enter' && startRound()}
                   />
                   {!roundActive && story.trim() && (
@@ -603,42 +683,80 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
             }
           </div>
 
-          {/* Tu voto */}
-          <div className="lp-section">
-            <div className="lp-label">Tu voto</div>
-            <div className="lp-vote-display">
-              {myVote
-                ? <span className="lp-vote-val">{myVote}</span>
-                : <span className="lp-vote-empty">—</span>
-              }
-            </div>
-            <div className="lp-cards">
-              {FIBONACCI.map(v => (
-                <button
-                  key={v}
-                  className={`lp-card ${myVote === v ? 'sel' : ''} ${isRevealed || !roundActive ? 'dis' : ''}`}
-                  onClick={() => vote(v)}
-                  disabled={isRevealed || !roundActive}
-                >
-                  {v}
-                </button>
-              ))}
-            </div>
-            {roundActive && !isRevealed && (
-              <div className={`lp-confirm-btn ${myVote ? 'ready' : 'waiting'}`}>
-                {myVote ? '✓ Voto registrado' : 'Elige una carta…'}
+          {/* Cartas — ocultas para espectadores */}
+          {!amISpectator && (
+            <div className="lp-section">
+              <div className="lp-label">Tu voto</div>
+              <div className="lp-vote-display">
+                {myVote
+                  ? <span className="lp-vote-val">{myVote}</span>
+                  : <span className="lp-vote-empty">—</span>
+                }
               </div>
-            )}
-          </div>
+              <div className="lp-cards">
+                {cards.map(v => (
+                  <button
+                    key={v}
+                    className={`lp-card ${myVote === v ? 'sel' : ''} ${isRevealed || !roundActive ? 'dis' : ''}`}
+                    onClick={() => vote(v)}
+                    disabled={isRevealed || !roundActive}
+                  >
+                    {v}
+                  </button>
+                ))}
+              </div>
+              {roundActive && !isRevealed && (
+                <div className={`lp-confirm-btn ${myVote ? 'ready' : 'waiting'}`}>
+                  {myVote ? '✓ Voto registrado' : 'Elegí una carta…'}
+                </div>
+              )}
+            </div>
+          )}
 
-          {/* Jugadores */}
+          {/* Banner espectador */}
+          {amISpectator && (
+            <div className="lp-section">
+              <div className="lp-spectator-banner">
+                <span className="lp-spectator-banner-icon">👁</span>
+                <span className="lp-spectator-banner-title">Modo espectador</span>
+                <span className="lp-spectator-banner-desc">
+                  Estás observando la partida
+                </span>
+              </div>
+              {!isFacilitator && !roundActive && (
+                <button
+                  className="lp-role-btn lp-role-btn-join"
+                  onClick={toggleMySpectatorRole}
+                  disabled={togglingRole}
+                  style={{ marginTop: '.6rem' }}
+                >
+                  {togglingRole ? '…' : '🃏 Unirme como jugador'}
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Botón jugador → espectador */}
+          {!amISpectator && !isFacilitator && !roundActive && (
+            <div className="lp-section">
+              <button
+                className="lp-role-btn lp-role-btn-spectate"
+                onClick={toggleMySpectatorRole}
+                disabled={togglingRole}
+              >
+                {togglingRole ? '…' : '👁 Cambiar a espectador'}
+              </button>
+            </div>
+          )}
+
+          {/* Lista de jugadores */}
           <div className="lp-section">
             <div className="lp-label-row">
-              <span className="lp-label">Jugadores ({totalCount})</span>
+              <span className="lp-label">Jugadores ({voters.length})</span>
               <span className="lp-label-icon">⇅</span>
             </div>
             <div className="lp-player-list">
-              {participants.map(p => (
+              {voters.map(p => (
                 <div
                   key={p.user_key}
                   className={`lp-player ${p.user_key === userKey ? 'me' : ''}`}
@@ -650,12 +768,12 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
                   {p.user_key === room?.facilitator_id && (
                     <span title="Facilitador" style={{ fontSize: '.75rem' }}>👑</span>
                   )}
-                  {!isRevealed && votesMap[p.user_key] !== undefined &&
+                  {!isRevealed && votesMap[p.user_key] !== undefined && (
                     <span className="lp-voted">✓</span>
-                  }
-                  {isRevealed && votesMap[p.user_key] &&
+                  )}
+                  {isRevealed && votesMap[p.user_key] && (
                     <span className="lp-vote-shown">{votesMap[p.user_key]}</span>
-                  }
+                  )}
                   {isFacilitator
                     && p.user_key !== userKey
                     && p.user_key !== room?.facilitator_id && (
@@ -672,6 +790,41 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
             </div>
           </div>
 
+          {/* Lista de espectadores */}
+          {spectators.length > 0 && (
+            <div className="lp-section">
+              <div className="lp-label-row">
+                <span className="lp-label">
+                  Espectadores ({spectators.length})
+                </span>
+                <span style={{ fontSize: '.85rem' }}>👁</span>
+              </div>
+              <div className="lp-player-list">
+                {spectators.map(p => (
+                  <div
+                    key={p.user_key}
+                    className={`lp-player spectator ${p.user_key === userKey ? 'me' : ''}`}
+                  >
+                    <span className="lp-player-av">{p.avatar}</span>
+                    <span className="lp-player-name">
+                      {p.name}{p.user_key === userKey ? ' (tú)' : ''}
+                    </span>
+                    <span className="lp-spectator-icon-sm">👁</span>
+                    {isFacilitator && p.user_key !== userKey && (
+                      <button
+                        className="lp-kick-btn"
+                        onClick={() => kickPlayer(p.user_key)}
+                        title={`Remover a ${p.name}`}
+                      >
+                        ✕
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <button className="lp-leave" onClick={handleLeave}>
             ← Salir de la sala
           </button>
@@ -682,6 +835,7 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
           <div className="table-wrap">
             <PokerTable
               participants={participants}
+              spectatorKeys={spectatorKeySet}
               votesMap={votesMap}
               revealed={isRevealed}
               myKey={userKey}
@@ -723,6 +877,7 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
                   {timeDisplay}
                 </text>
               </svg>
+
               {isFacilitator && (
                 <>
                   <div className="rp-timer-btns">
@@ -738,7 +893,10 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
                     ))}
                   </div>
                   {timerRunning
-                    ? <button className="rp-action-btn rp-stop" onClick={handleStopTimer}>
+                    ? <button
+                        className="rp-action-btn rp-stop"
+                        onClick={handleStopTimer}
+                      >
                         ⏹ Detener
                       </button>
                     : <button
@@ -783,9 +941,19 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
             <div className="rp-prog-track">
               <div
                 className="rp-prog-fill"
-                style={{ width: `${totalCount ? (votedCount / totalCount) * 100 : 0}%` }}
+                style={{
+                  width: `${totalCount ? (votedCount / totalCount) * 100 : 0}%`
+                }}
               />
             </div>
+            {spectators.length > 0 && (
+              <div className="rp-stat-row" style={{ marginTop: '.4rem' }}>
+                <span className="rp-stat-lbl">Espectadores:</span>
+                <span className="rp-stat-val rp-stat-spectators">
+                  {spectators.length}
+                </span>
+              </div>
+            )}
           </div>
 
           {/* Distribución post-reveal */}
@@ -793,31 +961,39 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
             <div className="rp-section">
               <div className="rp-label">Distribución</div>
               <div className="rp-avg">
-                Promedio: <b>{avg}</b>{allAgreed && ' ✓ Consenso'}
+                {cardMode === 'tshirt' ? 'Resultado: ' : 'Promedio: '}
+                <b>{avg}</b>
+                {allAgreed && ' ✓ Consenso'}
               </div>
-              {FIBONACCI.map(f => {
-                const cnt = Object.values(votesMap).filter(v => v === f).length
-                if (!cnt) return null
-                const who = participants.filter(p => votesMap[p.user_key] === f)
-                return (
-                  <div key={f} className="res-row">
-                    <span className="res-val">{f}</span>
-                    <div className="res-track">
-                      <div
-                        className="res-bar"
-                        style={{ width: `${(cnt / totalCount) * 100}%` }}
-                      />
+              {cards
+                .filter(f => f !== '☕' && f !== '?')
+                .map(f => {
+                  const cnt = Object.values(votesMap).filter(v => v === f).length
+                  if (!cnt) return null
+                  const who = voters.filter(p => votesMap[p.user_key] === f)
+                  return (
+                    <div key={f} className="res-row">
+                      <span className="res-val">{f}</span>
+                      <div className="res-track">
+                        <div
+                          className="res-bar"
+                          style={{
+                            width: `${totalCount ? (cnt / totalCount) * 100 : 0}%`
+                          }}
+                        />
+                      </div>
+                      <span className="res-avs">
+                        {who.map(p => p.avatar).join('')}
+                      </span>
+                      <span className="res-cnt">{cnt}x</span>
                     </div>
-                    <span className="res-avs">{who.map(p => p.avatar).join('')}</span>
-                    <span className="res-cnt">{cnt}x</span>
-                  </div>
-                )
-              })}
+                  )
+                })
+              }
             </div>
           )}
 
           {/* Historial rápido */}
-          {/* FIX #13 — Ordenar explícitamente */}
           <div className="rp-section rp-hist-section">
             <div className="rp-label">Historial de votación</div>
             {rounds.length === 0
@@ -828,12 +1004,18 @@ export default function Room({ roomId, roomCode, userKey, onLeave, onKicked }) {
                   .map(h => (
                     <div key={h.id} className="rp-hist-row">
                       <span className="rp-hist-story">{h.story}</span>
-                      <span className="rp-hist-avg">{h.average}</span>
+                      <span className="rp-hist-avg">
+                        {h.average}
+                        {h.card_mode !== 'tshirt' && ' pts'}
+                      </span>
                     </div>
                   ))
             }
             {rounds.length > 0 && (
-              <button className="rp-hist-link" onClick={() => setShowHistory(true)}>
+              <button
+                className="rp-hist-link"
+                onClick={() => setShowHistory(true)}
+              >
                 Ver todo →
               </button>
             )}
